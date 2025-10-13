@@ -207,3 +207,4 @@ brew install ffmpeg
 - Results are saved in `outputs_v3/` directory
 - The baseline configuration provides stable, reliable results
 - Advanced features can be enabled by modifying configuration flags
+# mp4-id-detector
