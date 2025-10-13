@@ -1,0 +1,21 @@
+# ByteTrack configuration tuned for better tracking in multi-person scenarios
+# Lower thresholds to detect and track people more consistently
+
+tracker_type: bytetrack
+
+# Detection confidence thresholds (SENSITIVE for 2 people in clip 0!)
+track_high_thresh: 0.30   # Default: 0.5 → Low to catch both people
+track_low_thresh: 0.02    # Default: 0.1 → Low to recover lost tracks
+new_track_thresh: 0.55    # Default: 0.6 → Moderate to create tracks for 2nd person
+
+# Tracking parameters
+track_buffer: 180        # Default: 30 → 3x longer to keep tracks alive
+match_thresh: 0.75        # Default: 0.8 → Balanced to avoid over-merging 2 people
+frame_rate: 30            # Set to your video FPS
+fuse_score: True          # Fuse detection scores with IOU for matching
+
+# Additional parameters
+# These control how aggressively ByteTrack creates and maintains tracks
+min_box_area: 10          # Minimum bounding box area
+aspect_ratio_thresh: 1.6  # Maximum aspect ratio for valid detections
+

@@ -1,0 +1,40 @@
+# Minimal requirements for mp4_id_detector
+# Essential dependencies only
+
+# Core ML
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.21.0
+scikit-learn>=1.1.0
+
+# Computer Vision
+opencv-python>=4.8.0
+Pillow>=9.0.0
+
+# YOLO
+ultralytics>=8.0.0
+
+# ReID
+torchreid>=1.4.0
+
+# Face Recognition
+insightface>=0.7.0
+onnxruntime>=1.15.0
+
+# CLIP
+transformers>=4.30.0
+
+# Pose Estimation
+mediapipe>=0.10.0
+
+# Video Processing
+imageio>=2.25.0
+imageio-ffmpeg>=0.4.8
+
+# Data Processing
+pandas>=1.5.0
+matplotlib>=3.6.0
+
+# Utilities
+tqdm>=4.64.0
+pyyaml>=6.0

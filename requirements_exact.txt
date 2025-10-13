@@ -1,0 +1,70 @@
+# Exact working versions for mp4_id_detector
+# Tested and verified versions
+
+# Core PyTorch
+torch==2.1.0
+torchvision==0.16.0
+torchaudio==2.1.0
+
+# Core ML Libraries
+numpy==1.24.3
+scipy==1.11.1
+scikit-learn==1.3.0
+
+# Computer Vision
+opencv-python==4.8.1.78
+opencv-contrib-python==4.8.1.78
+Pillow==10.0.0
+albumentations==1.3.1
+
+# YOLO and Object Detection
+ultralytics==8.0.196
+yolov8==8.0.0
+
+# ReID and Person Re-identification
+torchreid==1.4.0
+
+# Face Recognition
+insightface==0.7.3
+onnxruntime==1.16.0
+onnx==1.14.1
+
+# CLIP and Vision-Language
+transformers==4.33.0
+ftfy==6.1.1
+regex==2023.8.8
+
+# Pose Estimation
+mediapipe==0.10.3
+
+# Video Processing
+imageio==2.31.3
+imageio-ffmpeg==0.4.9
+ffmpeg-python==0.2.0
+
+# Data Processing
+pandas==2.0.3
+matplotlib==3.7.2
+seaborn==0.12.2
+
+# Utilities
+tqdm==4.65.0
+colorama==0.4.6
+termcolor==2.3.0
+
+# File I/O
+h5py==3.9.0
+tables==3.9.1
+joblib==1.3.2
+
+# Configuration
+pyyaml==6.0.1
+
+# Web
+requests==2.31.0
+urllib3==2.0.4
+
+# Development
+pytest==7.4.0
+black==23.7.0
+flake8==6.0.0
