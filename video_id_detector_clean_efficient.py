@@ -601,38 +601,47 @@ def export_results(all_tracklet_features, fps, width, height):
     df.to_csv(f"{OUTPUT_DIR}/tracklet_assignments.csv", index=False)
     print(f"✅ Exported CSV: {len(csv_data)} records")
     
-    # Export to JSON (aligned summary)
+    # Export to JSON (matching original format exactly)
     json_data = {
         'summary': {
-            'total_clips': len(VIDEO_FILES),
-            'total_tracklets': len(all_tracklets),
             'total_global_identities': len(set(t['global_id'] for t in all_tracklets)),
+            'total_tracklets': len(all_tracklets),
             'config': {
-                'ensemble_reid': USE_ENSEMBLE_REID,
-                'ensemble_weights': ENSEMBLE_WEIGHTS if USE_ENSEMBLE_REID else None,
+                'clustering_method': 'ADAPTIVE',
                 'face_weight': FACE_WEIGHT,
-                'body_weight': BODY_WEIGHT,
                 'motion_weight': MOTION_WEIGHT,
-                'pose_weight': POSE_WEIGHT
+                'pose_weight': POSE_WEIGHT,
+                'body_weight': BODY_WEIGHT,
+                'ensemble': USE_ENSEMBLE_REID,
+                'tta': True,
+                'temporal_smoothing': True,
+                'camera_bias': True,
+                'reranking': True
             }
         },
         'identities': {}
     }
     
-    # Group by global ID
+    # Group by global ID (using original format with "global_id_X" keys)
     for tracklet in all_tracklets:
         global_id = int(tracklet['global_id'])  # Convert to Python int
-        if global_id not in json_data['identities']:
-            json_data['identities'][global_id] = {
+        key = f"global_id_{global_id}"
+        
+        if key not in json_data['identities']:
+            json_data['identities'][key] = {
                 'global_id': global_id,
                 'appearances': []
             }
         
-        json_data['identities'][global_id]['appearances'].append({
+        # Calculate start_frame and end_frame from frames array
+        frames = tracklet['frames']
+        start_frame = min(frames) if frames else 0
+        end_frame = max(frames) if frames else 0
+        
+        json_data['identities'][key]['appearances'].append({
             'clip_idx': int(tracklet['clip_idx']),
-            'track_id': int(tracklet['track_id']),
-            'frames': [int(f) for f in tracklet['frames']],
-            'bboxes': [[float(x) for x in bbox] for bbox in tracklet['bboxes']]
+            'start_frame': int(start_frame),
+            'end_frame': int(end_frame)
         })
     
     with open(f"{OUTPUT_DIR}/global_identity_catalogue.json", 'w') as f:
