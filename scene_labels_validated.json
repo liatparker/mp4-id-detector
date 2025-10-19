@@ -1,0 +1,29 @@
+{
+  "dataset": "mp4_files_id_detectors_upscaled_validated",
+  "scene_labels": [
+    {
+      "clip_id": 0,
+      "label": "crime",
+      "category": "SHOPLIFTING",
+      "confidence": 0.53
+    },
+    {
+      "clip_id": 1,
+      "label": "normal",
+      "category": "NO_CRIME",
+      "confidence": 0.033
+    },
+    {
+      "clip_id": 2,
+      "label": "normal",
+      "category": "NO_CRIME",
+      "confidence": 0.024
+    },
+    {
+      "clip_id": 3,
+      "label": "crime",
+      "category": "GUN",
+      "confidence": 0.9
+    }
+  ]
+}
