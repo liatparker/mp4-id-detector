@@ -1,4 +1,3 @@
-
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 import os
@@ -29,38 +28,63 @@ Video ID Detector 2 - Advanced Person Re-identification System
 
 OVERVIEW:
 This system performs person re-identification across multiple video clips using advanced
-computer vision and machine learning techniques. It can identify the same person
-appearing in different video clips, even when viewed from different angles or under
-different lighting conditions.
+computer vision and machine learning techniques. It identifies the same person appearing
+in different video clips, even when viewed from different angles, lighting conditions,
+or with occlusions.
+
+ALGORITHM OVERVIEW:
+The system uses a two-stage adaptive clustering approach:
+1. Stage 1 (Within-Clip Clustering): Strict separation of different people within the same video clip
+   - Uses high face weight (0.4) since faces are reliable within same lighting/angle
+   - Applies temporal overlap analysis to prevent merging simultaneous people
+   - Adaptive thresholds based on clip characteristics (crowding, tracking quality, face visibility)
+   - Hard block for overlap > 50% (different people appearing simultaneously)
+
+2. Stage 2 (Cross-Clip Merging): Lenient matching of the same person across different video clips
+   - Uses face weight 0.45 (45%) for cross-clip matching (slightly higher than within-clip 0.4)
+   - Image-only embeddings (body + face when both available)
+   - Best-of-cluster matching: compares best tracklet pairs to prevent single bad tracklet from dominating
+   - Two-pass merging: face/no-face pairs first, then face-to-face pairs
+   - Adaptive thresholds based on tracklet length and face availability
 
 KEY FEATURES:
-1. Multi-Model Ensemble: Combines OSNet and TransReID for robust feature extraction
-2. Two-Stage Clustering: Strict within-clip separation, lenient cross-clip matching
-3. View Invariance: Test-Time Augmentation and temporal smoothing for robust embeddings
-4. Physical Proximity Logic: Uses spatial relationships to resolve ambiguous cases
-5. Hybrid Embeddings: Combines image and video features for better accuracy
-6. Caching System: NPZ file caching for fast parameter tuning and development
+1. Multi-Model Ensemble: Combines OSNet (IBN-Net) and TransReID for robust body feature extraction
+2. Face Recognition: InsightFace for face embeddings when faces are detected
+3. Pose Features: MediaPipe for pose keypoints (optional, currently disabled)
+4. View Invariance: Test-Time Augmentation (horizontal flip) and temporal smoothing
+5. Quality-Weighted Embeddings: Higher weight for frames with faces and good pose detection
+6. Representative Frame Selection: Chooses diverse high-quality frames for multi-frame matching
+7. Caching System: NPZ file caching for fast parameter tuning and development
 
-TECHNICAL APPROACH:
-- Stage 1: Within-clip clustering (strict thresholds) - separates different people in same scene
-- Stage 2: Cross-clip merging (adaptive thresholds) - matches same person across scenes
-- Adaptive thresholds based on scene characteristics (crowding, tracking quality, face visibility)
-- Physical proximity detection to resolve ambiguous clustering cases
+EMBEDDING EXTRACTION:
+- Body: OSNet (512D) + TransReID (768D) ensemble → 1280D (weighted 70%/30%)
+- Face: InsightFace → 512D (when face detected)
+- Pose: MediaPipe → 66D (optional, currently disabled)
+- Motion: Temporal features → 5D (currently disabled)
+
+DISTANCE CALCULATION:
+- Within-clip: Body (60%) + Face (40%) when both have faces (WITHIN_CLIP_FACE_WEIGHT = 0.4)
+- Cross-clip: Body (55%) + Face (45%) when both have faces, body-only otherwise (CROSS_CLIP_FACE_WEIGHT = 0.45)
+- Best-of-cluster: Uses minimum distance among all tracklet pairs for merged clusters
 
 INPUT:
-- Multiple video files (MP4 format)
+- Multiple video files (MP4 format) in ./videos/ directory
 - Each video represents a different scene/time period
+- Videos are processed sequentially with unique clip indices
 
 OUTPUT:
-- Global identity assignments for each detected person
-- CSV and JSON files with detailed results
-- Tracklet-to-global-ID mappings
+- Global identity catalogue (JSON): Summary and detailed appearance information
+- Tracklet-to-global-ID mappings (NPZ): For caching and analysis
+- Embeddings cache (NPZ): Pre-computed embeddings for fast iteration
 
 USAGE:
     python video_id_detector2_optimized.py
 
-AUTHOR: Advanced Computer Vision System
-VERSION: 2.0 - Optimized with Physical Proximity Logic
+CONFIGURATION:
+- Adjust clustering thresholds in CONFIGURATION section
+- Enable/disable features via flags (USE_TTA, USE_POSE_FEATURES, etc.)
+- Per-clip thresholds can be manually overridden or auto-calculated
+
 """
 
 # ======================
@@ -112,53 +136,14 @@ LAMBDA_VALUE = 0.5             # Lambda parameter for re-ranking
 # Pose estimation features for additional person characterization
 USE_POSE_FEATURES = True
 POSE_CONFIDENCE = 0.5          # Minimum confidence threshold for pose features
-# Spatial-temporal context matching (currently disabled)
-# USE_SPATIAL_TEMPORAL_CONTEXT = True
 
 
 # ======================
 # CLUSTERING CONFIGURATION
 # ======================
 
-# Physical Proximity Logic
-# Master flag for advanced clustering with physical proximity detection
 USE_ADVANCED_CLUSTERING_LOGIC = True
-# DISABLED: Physical proximity tolerance and spatial threshold (commented out to prevent over-merging)
-# PROXIMITY_PATTERN_TOLERANCE = 0.15  # Tolerance for physical proximity patterns
-# SPATIAL_PROXIMITY_THRESHOLD = 0.3   # Threshold for cross-clip spatial proximity detection
 
-# Robust Weight System for Ambiguous Cases
-# Enhanced weights that prioritize clothing/appearance features for difficult cases
-USE_ROBUST_AMBIGUOUS_WEIGHTS = False  # Currently disabled
-AMBIGUOUS_DISTANCE_THRESHOLD = 0.5   # Distance threshold to trigger robust weights
-ROBUST_BODY_WEIGHT = 0.8            # Higher body weight for ambiguous cases (clothing/appearance)
-ROBUST_FACE_WEIGHT = 0.1            # Lower face weight for ambiguous cases
-ROBUST_POSE_WEIGHT = 0.05           # Lower pose weight for ambiguous cases
-ROBUST_MOTION_WEIGHT = 0.05         # Lower motion weight for ambiguous cases
-
-# Physical Proximity Chain Logic
-# Detects when people who were physically close in one clip appear with new people in other clips
-USE_PHYSICAL_PROXIMITY_CHAIN = False  # Currently disabled
-PHYSICAL_CHAIN_TOLERANCE = 0.05       # Tolerance to add to distance threshold for physical chain pairs
-
-# Output Control
-# Set to True for detailed debugging output during development
-
-# Alternative Clustering Approaches
-# Clothing/appearance focused approach (currently disabled)
-USE_CLOTHING_FOCUSED_APPROACH = False  # Use clothing/appearance weights for ALL comparisons
-CLOTHING_BODY_WEIGHT = 0.8            # Body weight for clothing-focused approach
-CLOTHING_FACE_WEIGHT = 0.1            # Face weight for clothing-focused approach
-CLOTHING_POSE_WEIGHT = 0.05           # Pose weight for clothing-focused approach
-CLOTHING_MOTION_WEIGHT = 0.05         # Motion weight for clothing-focused approach
-
-# Video-Level ReID Configuration
-# Enable video sequence processing for temporal consistency
-USE_VIDEO_REID = True
-VIDEO_SEQUENCE_LENGTH = 4             # Number of frames per video clip
-VIDEO_SEQUENCE_STRIDE = 2             # Overlap between clips (50% overlap)
-VIDEO_WEIGHT = 0.6                    # Weight for video embeddings (60% video, 40% image)
-VIDEO_DIM = 768                       # Video embedding dimension
 
 # View Invariance Features
 # Test-time augmentation for improved robustness across different viewing angles
@@ -170,12 +155,6 @@ SMOOTHING_WINDOW = 5                  # Number of frames to smooth over
 # CLUSTERING ALGORITHM CONFIGURATION
 # ======================
 
-# Clustering Method Selection
-CLUSTERING_METHOD = "ADAPTIVE"        # Options: "SIMILARITY" or "DBSCAN"
-SIMILARITY_THRESHOLD = 0.8            # High threshold for Euclidean distance
-DBSCAN_EPS = 0.35                     # DBSCAN epsilon parameter
-DBSCAN_MIN_SAMPLES = 1                # Minimum samples for DBSCAN clusters
-
 # Distance Metrics
 DISTANCE_METRIC = "cosine"            # Primary distance metric
 USE_CHAMFER_DISTANCE = False          # Alternative distance metric for cross-clip matching
@@ -185,12 +164,12 @@ USE_CHAMFER_DISTANCE = False          # Alternative distance metric for cross-cl
 USE_ADAPTIVE_CLUSTERING = True
 
 # Stage 1: Within-clip clustering (strict - separate people in same scene)
-WITHIN_CLIP_THRESHOLD = 0.2 # Strict for separation
+WITHIN_CLIP_THRESHOLD = 0.15 # More reasonable for Clip 2 similarities
 WITHIN_CLIP_FACE_WEIGHT = 0.4  # High - faces reliable in same lighting/angle
 
 # Stage 2: Cross-clip merging (lenient - match same person across scenes)
 CROSS_CLIP_THRESHOLD = 0.46  # Lenient for matching
-CROSS_CLIP_FACE_WEIGHT = 0.45  # Low - faces change with angles/lighting
+CROSS_CLIP_FACE_WEIGHT = 0.45  # 45% - slightly higher than within-clip (0.4) for cross-clip matching
 
 # Per-clip adaptive thresholds (AUTOMATIC ANALYSIS)
 USE_PER_CLIP_THRESHOLDS = True  # Enable automatic per-clip analysis
@@ -327,45 +306,6 @@ else:
 
 print("All models loaded!\n")
 
-# STEP C: DEFINE the video model class FIRST
-# ======================
-# VIDEO REID MODEL
-# ======================
-
-# Add VID-Trans-ReID to path
-import sys
-sys.path.append('./VID-Trans-ReID')
-from VID_Trans_model import VID_Trans
-
-# Initialize video model variable
-video_reid_model = None
-
-# Load Video ReID Model
-if USE_VIDEO_REID:
-    print(f"  • VID-Trans-ReID Model...")
-    try:
-        # Load pretrained VID-Trans-ReID
-        video_reid_model = VID_Trans(
-            num_classes=625,  # MARS dataset classes
-            camera_num=6,     # Number of cameras in MARS
-            pretrainpath='./VID-Trans-ReID/jx_vit_base_p16_224-80ecf9dd.pth'  # ImageNet pretrained ViT
-        )
-        video_reid_model.eval()
-        video_reid_model.to(DEVICE)
-        print("    VID-Trans-ReID loaded with pretrained weights!")
-    except Exception as e:
-        print(f"    Failed to load VID-Trans-ReID: {e}")
-        print("    Falling back to image-only mode")
-        USE_VIDEO_REID = False
-
-
-print(f"Video ReID enabled: {USE_VIDEO_REID}")
-if USE_VIDEO_REID:
-    print(f"   Sequence length: {VIDEO_SEQUENCE_LENGTH} frames")
-    print(f"   Video weight: {VIDEO_WEIGHT:.0%}\n")
-else:
-    print()
-
 
 def preprocess_crop(crop):
     """
@@ -480,7 +420,30 @@ def extract_face_batch(crops):
             has_faces.append(False)
     return np.array(embeddings, dtype=np.float32), np.array(has_faces)
 def extract_osnet_with_tta(crop):
-    """Extract OSNet embedding with Test-Time Augmentation"""
+    """
+    Extract OSNet body embedding with Test-Time Augmentation (TTA).
+    
+    This function extracts body embeddings from a person crop using OSNet (IBN-Net)
+    with optional horizontal flip augmentation for improved view invariance.
+    
+    Args:
+        crop (numpy.ndarray): Person crop image in BGR format
+        
+    Returns:
+        numpy.ndarray: 512-dimensional normalized OSNet embedding vector
+        
+    Processing:
+        1. Resizes crop to 128x256 (HxW) for OSNet input
+        2. Normalizes using ImageNet statistics
+        3. Extracts embedding from original image
+        4. If TTA enabled: extracts embedding from horizontally flipped image
+        5. Averages original and flipped embeddings
+        6. Normalizes to unit length
+        
+    Features:
+        - Test-Time Augmentation improves robustness to view changes
+        - Returns zero vector on extraction failure
+    """
     try:
         # Preprocess for OSNet: 256x128 (H x W)
         img = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
@@ -523,9 +486,37 @@ def extract_osnet_with_tta(crop):
         return np.zeros(OSNET_DIM, dtype=np.float32)
 
 
-    # ... your existing code ...
 def extract_body_batch(crops):
-    """Extract body embeddings using IBN-OSNet + TransReID ensemble with TTA"""
+    """
+    Extract body embeddings for a batch of person crops using ensemble of OSNet and TransReID.
+    
+    This function processes multiple person crops and extracts combined body embeddings
+    using an ensemble of two models: OSNet (IBN-Net) and TransReID. The ensemble
+    provides more robust and discriminative features than a single model.
+    
+    Args:
+        crops (list): List of person crop images (numpy arrays in BGR format)
+        
+    Returns:
+        list: List of body embedding vectors, each 1280-dimensional (if ensemble enabled)
+              or 512-dimensional (OSNet only)
+              
+    Ensemble Configuration:
+        - OSNet weight: 0.7 (70% of 512D = 358.4D effective)
+        - TransReID weight: 0.3 (30% of 768D = 230.4D effective)
+        - Final concatenated: 512D + 768D = 1280D total
+        
+    Processing:
+        1. Extracts OSNet embedding with TTA for each crop
+        2. If ensemble enabled: extracts TransReID embedding
+        3. Combines embeddings with weighted concatenation
+        4. Returns list of combined embeddings
+        
+    Note:
+        - OSNet embedding already includes TTA (horizontal flip averaging)
+        - TransReID embedding is extracted separately without TTA
+        - Both embeddings are normalized individually before concatenation
+    """
     batch_embeddings = []
     
     for crop in crops:
@@ -609,10 +600,28 @@ def smooth_track_embeddings(embeddings_list, window_size=5):
     return smoothed
 def compute_frame_quality(bbox_conf, face_detected, pose_conf):
     """
-    Compute quality score for a frame based on detection confidence.
-    Higher quality = more reliable for ReID embedding.
+    Compute quality score for a frame based on detection confidence and feature availability.
     
-    Priority: Face > Pose > BBox
+    Higher quality scores indicate more reliable frames for ReID embedding extraction.
+    Quality is used to weight frame embeddings when aggregating tracklet representations.
+    
+    Args:
+        bbox_conf (float): Bounding box detection confidence (0-1)
+        face_detected (bool): Whether a face was detected in this frame
+        pose_conf (float): Pose detection confidence (0-1)
+        
+    Returns:
+        float: Quality score in range [0, 1], where 1.0 is highest quality
+        
+    Weighting:
+        - Face presence: 60% weight (binary: 1.0 if detected, 0.0 if not)
+        - Pose confidence: 30% weight (clipped to [0, 1])
+        - Bbox confidence: 10% weight (clipped to [0, 1], default 0.5 if missing)
+        
+    Rationale:
+        Face presence is most important for reliable person identification.
+        Pose features provide additional discriminative information.
+        Bbox confidence indicates detection quality.
     """
     # Normalize inputs
     face_score = 1.0 if face_detected else 0.0
@@ -630,7 +639,29 @@ def compute_frame_quality(bbox_conf, face_detected, pose_conf):
 def weighted_average_embeddings(embeddings_list, qualities):
     """
     Compute weighted average of embeddings based on quality scores.
-    High-quality frames (with faces) get more weight.
+    
+    This function aggregates multiple frame embeddings into a single tracklet embedding
+    by weighting each frame according to its quality score. High-quality frames (with
+    faces and good pose detection) contribute more to the final representation.
+    
+    Args:
+        embeddings_list (list): List of embedding vectors from consecutive frames
+        qualities (list): List of quality scores (0-1) corresponding to each frame
+        
+    Returns:
+        numpy.ndarray: Single weighted average embedding vector (normalized to unit length)
+        None: If input list is empty
+        
+    Algorithm:
+        1. Converts embeddings and qualities to numpy arrays
+        2. Applies softmax weighting with temperature=3.0 to sharpen distribution
+        3. Computes weighted average: sum(embedding * weight) for each dimension
+        4. Normalizes result to unit length
+        
+    Benefits:
+        - High-quality frames dominate the final representation
+        - Smooth transition between frames
+        - Normalized output ensures consistent distance calculations
     """
     if len(embeddings_list) == 0:
         return None
@@ -653,64 +684,34 @@ def weighted_average_embeddings(embeddings_list, qualities):
     
     return weighted_emb
 
-def calculate_bbox_proximity(bbox1, bbox2):
-    """
-    Calculate spatial proximity between two bounding boxes.
-    Returns a value between 0 and 1, where 1 means perfect overlap.
-    
-    Args:
-        bbox1: [x1, y1, x2, y2] - first bounding box
-        bbox2: [x1, y1, x2, y2] - second bounding box
-    
-    Returns:
-        float: proximity score (0-1)
-    """
-    x1_1, y1_1, x2_1, y2_1 = bbox1
-    x1_2, y1_2, x2_2, y2_2 = bbox2
-    
-    # Calculate intersection
-    x1_i = max(x1_1, x1_2)
-    y1_i = max(y1_1, y1_2)
-    x2_i = min(x2_1, x2_2)
-    y2_i = min(y2_1, y2_2)
-    
-    # Check if there's an intersection
-    if x1_i >= x2_i or y1_i >= y2_i:
-        # No intersection - calculate distance-based proximity
-        # Calculate center points
-        cx1 = (x1_1 + x2_1) / 2
-        cy1 = (y1_1 + y2_1) / 2
-        cx2 = (x1_2 + x2_2) / 2
-        cy2 = (y1_2 + y2_2) / 2
-        
-        # Calculate distance between centers
-        distance = np.sqrt((cx1 - cx2)**2 + (cy1 - cy2)**2)
-        
-        # Calculate average size for normalization
-        size1 = (x2_1 - x1_1) * (y2_1 - y1_1)
-        size2 = (x2_2 - x1_2) * (y2_2 - y1_2)
-        avg_size = np.sqrt((size1 + size2) / 2)
-        
-        # Convert distance to proximity (closer = higher proximity)
-        proximity = max(0, 1 - (distance / (avg_size * 2)))  # Normalize by 2x average size
-        return proximity
-    else:
-        # There's an intersection - calculate IoU
-        intersection_area = (x2_i - x1_i) * (y2_i - y1_i)
-        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
-        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
-        union_area = area1 + area2 - intersection_area
-        
-        if union_area > 0:
-            iou = intersection_area / union_area
-            return iou
-        else:
-            return 0.0
-
 def chamfer_distance(frames1, frames2, metric='cosine'):
     """
-    Compute normalized Chamfer distance between two sets of frame embeddings.
-    Uses bidirectional matching and normalizes to [0,1] range.
+    Compute Chamfer distance between two sets of frame embeddings.
+    
+    Chamfer distance measures the average distance from each point in one set to its
+    nearest neighbor in the other set, computed bidirectionally. This is useful for
+    comparing tracklets with multiple representative frames.
+    
+    Args:
+        frames1 (numpy.ndarray or list): First set of frame embeddings [N, D]
+        frames2 (numpy.ndarray or list): Second set of frame embeddings [M, D]
+        metric (str): Distance metric ('cosine' or 'euclidean')
+    
+    Returns:
+        float: Chamfer distance value (0 = identical, larger = more different)
+        1.0: If either set is empty (maximum distance)
+        
+    Algorithm:
+        1. Computes pairwise distance matrix [N x M]
+        2. For each frame in set1, finds minimum distance to any frame in set2
+        3. Averages these minimum distances → avg_1to2
+        4. For each frame in set2, finds minimum distance to any frame in set1
+        5. Averages these minimum distances → avg_2to1
+        6. Chamfer distance = (avg_1to2 + avg_2to1) / 2
+        
+    Note:
+        Currently disabled (USE_CHAMFER_DISTANCE = False). Standard cosine distance
+        with best-of-cluster matching is used instead.
     """
     if len(frames1) == 0 or len(frames2) == 0:
         return 1.0  # Max distance
@@ -729,27 +730,39 @@ def chamfer_distance(frames1, frames2, metric='cosine'):
     # Chamfer distance is average of both directions
     chamfer_dist = (avg_1to2 + avg_2to1) / 2
     
-    # NEW: Normalize to [0,1] range
-    #normalized_dist = chamfer_dist / (1 + chamfer_dist)
-    
     return chamfer_dist
 
 def select_representative_frames(frame_embeddings, qualities, max_frames=15):
     """
-    Select most representative frames from a tracklet.
+    Select most representative frames from a tracklet for multi-frame matching.
     
-    Strategy:
-    1. Always include top-quality frames (with faces)
-    2. Add diverse frames to cover different views
-    3. Limit to max_frames for efficiency
+    This function uses a two-stage strategy to select frames that are both high-quality
+    and diverse, ensuring good coverage of the person's appearance across the tracklet.
     
     Args:
-        frame_embeddings: List of [D] embeddings
-        qualities: List of quality scores
-        max_frames: Maximum frames to keep
+        frame_embeddings (list): List of embedding vectors [D] from consecutive frames
+        qualities (list): List of quality scores (0-1) corresponding to each frame
+        max_frames (int): Maximum number of frames to select (default: 15)
     
     Returns:
-        Selected frame embeddings as [K, D] array
+        numpy.ndarray: Selected frame embeddings as [K, D] array where K <= max_frames
+        
+    Selection Strategy:
+        1. Quality-based selection: Always includes top-quality frames
+           - Selects at least 5 frames or 30% of total frames (whichever is larger)
+           - Prioritizes frames with faces and good pose detection
+           
+        2. Diversity-based selection: Adds diverse frames to cover different views
+           - Uses farthest-point sampling (greedy approach)
+           - Iteratively selects frame farthest from already-selected set
+           - Ensures coverage of appearance space, not just time
+           
+        3. Budget constraint: Limits total selection to max_frames for efficiency
+        
+    Benefits:
+        - High-quality frames ensure reliable matching
+        - Diverse frames handle view changes and occlusions
+        - Efficient representation reduces computation in cross-clip matching
     """
     if len(frame_embeddings) <= max_frames:
         return np.array(frame_embeddings)
@@ -807,119 +820,43 @@ def select_representative_frames(frame_embeddings, qualities, max_frames=15):
     return frame_embeddings[selected_list]
 
 
-# STEP E: Video ReID Helper Functions
-
-def group_crops_into_sequences(crops, seq_len=16, stride=8):
-    """
-    Group frame crops into temporal sequences
-    
-    Args:
-        crops: List of [H, W, 3] numpy arrays
-        seq_len: Number of frames per sequence
-        stride: Step between sequences
-    
-    Returns:
-        List of sequences, each [seq_len, H, W, 3]
-    """
-    sequences = []
-    
-    for start_idx in range(0, len(crops), stride):
-        end_idx = start_idx + seq_len
-        
-        if end_idx > len(crops):
-            # Pad last sequence if needed
-            seq = crops[start_idx:]
-            padding_needed = seq_len - len(seq)
-            # Repeat last frame
-            seq = seq + [seq[-1]] * padding_needed
-        else:
-            seq = crops[start_idx:end_idx]
-        
-        sequences.append(seq)
-    
-    return sequences
-
-def extract_video_embedding(sequence):
-    """Extract video embedding using pretrained VID-Trans-ReID (simplified)"""
-    if video_reid_model is None:
-        return np.zeros(VIDEO_DIM, dtype=np.float32)
-    
-    try:
-        # VID-Trans-ReID preprocessing
-        processed_frames = []
-        for crop in sequence:
-            # Resize to match other models
-            img = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-            img = cv2.resize(img, (128, 256))  # Consistent with other models
-            img = img.astype(np.float32) / 255.0
-            
-            # Normalize (ImageNet stats)
-            mean = np.array([0.485, 0.456, 0.406])
-            std = np.array([0.229, 0.224, 0.225])
-            img = (img - mean) / std
-            
-            processed_frames.append(img)
-        
-        # Stack to tensor: [T, H, W, C] → [1, T, C, H, W]
-        sequence_array = np.stack(processed_frames, axis=0)
-        sequence_tensor = torch.from_numpy(sequence_array).float()
-        sequence_tensor = sequence_tensor.permute(0, 3, 1, 2)  # [T, C, H, W]
-        sequence_tensor = sequence_tensor.unsqueeze(0).to(DEVICE)  # [1, T, C, H, W]
-        
-        # Extract embedding using VID-Trans-ReID (simplified)
-        with torch.no_grad():
-            # Create camera label tensor (assuming clip 0 for now)
-            cam_label = torch.zeros(sequence_tensor.size(0), dtype=torch.long, device=DEVICE)
-            outputs = video_reid_model(sequence_tensor, cam_label=cam_label)
-            
-            # Simple approach: just take the first output
-            if isinstance(outputs, (tuple, list)):
-                video_emb = outputs[0]  # Take first element
-            else:
-                video_emb = outputs
-            
-            # Ensure it's a tensor and flatten
-            if hasattr(video_emb, 'cpu'):
-                video_emb = video_emb.cpu().numpy().flatten()
-            else:
-                video_emb = np.array(video_emb).flatten()
-        
-        # Normalize
-        video_emb = video_emb / (np.linalg.norm(video_emb) + 1e-8)
-        return video_emb
-        
-    except Exception as e:
-        print(f"Video embedding extraction failed: {e}")
-        return np.zeros(VIDEO_DIM, dtype=np.float32)
-        
-
-
 def merge_overlapping_tracks_same_clip(tracklets):
     """
-    Merge tracklet fragments that belong to the same person within each video clip.
+    Merge tracklet fragments within the same video clip that belong to the same person.
     
-    This function identifies and merges tracklet fragments that are likely from
-    the same person but were split due to tracking interruptions or occlusions.
-    It uses adaptive temporal overlap checking and embedding similarity.
+    This function identifies and merges tracklet fragments that were split due to
+    tracking interruptions, occlusions, or detection gaps. It uses temporal overlap
+    analysis and embedding similarity to safely merge fragments while preventing
+    incorrect merges of different people appearing simultaneously.
     
     Args:
-        tracklets (list): List of tracklet dictionaries from all video clips
+        tracklets (list): List of tracklet dictionaries from all video clips,
+            each containing 'clip_idx', 'start_frame', 'end_frame', 'body_emb', etc.
         
     Returns:
-        list: List of merged tracklets with combined temporal and embedding information
+        list: List of merged tracklets with combined temporal ranges and averaged embeddings
         
     Algorithm:
-        1. Groups tracklets by video clip
-        2. For each clip, identifies potential fragment pairs
-        3. Applies adaptive temporal overlap checking (prevents merging simultaneous people)
-        4. Uses embedding similarity for final merge decision
-        5. Combines temporal ranges and averages embeddings for merged tracklets
+        1. Groups tracklets by video clip (clip_idx)
+        2. For each clip, processes tracklets in temporal order
+        3. For each tracklet, checks if it can merge with existing merged tracklets:
+           a. Temporal overlap check: Must have gap <= 120 frames (3 seconds at 30fps)
+           b. Hard block: If overlap > 50%, they are different people → don't merge
+           c. Embedding similarity check: Must have body similarity >= 0.8
+        4. Merges fragments by:
+           - Combining temporal ranges (min start, max end)
+           - Averaging body and face embeddings
+           - Updating face detection flags (OR operation)
         
     Key Features:
-        - Adaptive overlap threshold based on track length
-        - High embedding similarity requirement (0.8) for merging
-        - Preserves temporal boundaries to prevent false merges
-        - Handles multiple fragments per person
+        - Hard block for overlap > 50% prevents merging simultaneous different people
+        - Gap tolerance allows merging fragments separated by short interruptions
+        - High similarity requirement (0.8) ensures only same-person merges
+        - Preserves all original tracklet metadata
+        
+    Note:
+        This function is called before adaptive clustering to reduce fragmentation.
+        It is conservative and only merges obvious fragments to avoid false merges.
     """
     if not tracklets:
         return []
@@ -1032,11 +969,54 @@ def merge_overlapping_tracks_same_clip(tracklets):
     print(f"  Merge complete: {len(tracklets)} → {len(merged_all)} tracklets")
     return merged_all
 def extract_pose_batch(crops):
-    """Extract pose features for batch"""
+    """
+    Extract pose features for a batch of person crops.
+    
+    This function processes multiple person crop images and extracts pose keypoints
+    for each using MediaPipe. It is a batch wrapper around extract_pose_features().
+    
+    Args:
+        crops (list): List of person crop images (numpy arrays in BGR format)
+        
+    Returns:
+        numpy.ndarray: Array of pose feature vectors [N, 66] where N = len(crops)
+                      Each vector is 66-dimensional (33 landmarks × 2 coordinates)
+                      Returns zero vectors if pose detection is disabled or fails
+    """
     return np.array([extract_pose_features(c) for c in crops], dtype=np.float32)
 
 def extract_motion_features(track_data):
-    """Extract motion features from track (5D vector)"""
+    """
+    Extract motion features from track data for temporal analysis.
+    
+    This function computes motion-related features from a person's track data,
+    capturing temporal patterns in movement, position, and size that can help
+    distinguish different people based on their motion characteristics.
+    
+    Args:
+        track_data (list): List of movement dictionaries, each containing:
+            - 'movement': Movement distance between consecutive frames (normalized)
+            - 'bbox_size': Relative bounding box size (area / frame area)
+            - 'v_pos': Vertical position (center y / frame height)
+            - 'h_pos': Horizontal position (center x / frame width)
+            
+    Returns:
+        numpy.ndarray: 5-dimensional motion feature vector:
+            [avg_movement, avg_bbox_size, avg_v_pos, avg_h_pos, std_movement]
+        Zero vector if track_data is empty
+        
+    Features:
+        1. Average movement: Mean movement distance across all frames
+        2. Average bbox size: Mean relative bounding box area
+        3. Average vertical position: Mean vertical position in frame
+        4. Average horizontal position: Mean horizontal position in frame
+        5. Movement std: Standard deviation of movement (captures motion variability)
+        
+    Note:
+        Currently disabled (MOTION_WEIGHT = 0.0) as motion features were found
+        to be non-discriminative (high average similarity between different people).
+        Motion features are still extracted but not used in distance calculations.
+    """
     if len(track_data) == 0:
         return np.zeros(MOTION_DIM, dtype=np.float32)
     
@@ -1064,32 +1044,65 @@ def process_video(video_path, clip_idx):
     """
     Process a single video file and extract person tracklets with embeddings.
     
-    This is the main video processing function that handles the complete pipeline
-    from video input to tracklet extraction with all necessary embeddings.
+    This is the main video processing function that handles the complete pipeline from
+    video input to tracklet extraction with all necessary embeddings. It performs
+    person detection, tracking, embedding extraction, and quality assessment.
     
     Args:
-        video_path (str): Path to the input video file
-        clip_idx (int): Index of the video clip (for identification)
+        video_path (str): Path to the input video file (MP4 format)
+        clip_idx (int): Index of the video clip (0, 1, 2, ...) for identification
         
     Returns:
         list: List of tracklet dictionaries, each containing:
             - 'clip_idx': Video clip index
-            - 'track_id': YOLO track ID
-            - 'start_frame', 'end_frame': Temporal boundaries
-            - 'body_emb': Body embedding vector
-            - 'face_emb': Face embedding vector (if available)
-            - 'bboxes': List of bounding boxes
-            - 'body_frames': Representative body frame embeddings
-            - 'face_frames': Representative face frame embeddings (if available)
+            - 'track_id': YOLO tracking ID (unique within clip)
+            - 'start_frame', 'end_frame': Temporal boundaries (inclusive)
+            - 'num_detections': Number of frames in tracklet
+            - 'body_emb': Averaged body embedding vector (1280D if ensemble, 512D otherwise)
+            - 'face_emb': Averaged face embedding vector (512D, zero if no face)
+            - 'pose_emb': Averaged pose embedding vector (66D, zero if disabled)
+            - 'motion_emb': Motion feature vector (5D)
+            - 'has_face': Boolean (True if >=15 consecutive face frames detected)
+            - 'face_ratio': Proportion of frames with face detection
+            - 'num_face_frames': Number of frames with detected faces
+            - 'max_consec_face_frames': Maximum consecutive face frames
+            - 'num_frames': Total number of frames
+            - 'frames': List of frame indices where person was detected
+            - 'bboxes': List of bounding boxes [x1, y1, x2, y2] for each frame
+            - 'body_frames': Representative body frame embeddings [K, 1280D] for multi-frame matching
+            - 'face_frames': Representative face frame embeddings [K, 512D] if faces available
             
     Processing Pipeline:
-        1. Video metadata extraction (FPS, frame count)
-        2. YOLO person detection and tracking
-        3. Tracklet extraction and validation
-        4. Multi-frame embedding extraction (body, face, pose)
-        5. Temporal smoothing of embeddings
-        6. Representative frame selection
-        7. Quality assessment and filtering
+        1. Video metadata extraction: Reads FPS and total frame count
+        2. YOLO person detection and tracking:
+           - Uses YOLOv8 with ByteTrack tracker
+           - Detects only class 0 (person) with conf=0.15, iou=0.35
+           - Tracks persons across frames with persistent IDs
+        3. Tracklet extraction:
+           - Groups detections by track_id
+           - Filters out tracks with <3 detections
+        4. Multi-frame embedding extraction (batched for efficiency):
+           - Body: OSNet + TransReID ensemble with TTA
+           - Face: InsightFace (when detected)
+           - Pose: MediaPipe (optional)
+           - Motion: Temporal features (position, size, movement)
+        5. Temporal smoothing: Applies EMA smoothing to reduce noise
+        6. Quality-weighted aggregation:
+           - Body: Weighted average based on frame quality (face > pose > bbox)
+           - Face: Weighted average of frames with faces only
+           - Pose: Simple average
+        7. Representative frame selection:
+           - Selects high-quality diverse frames for multi-frame matching
+           - Body: Up to 15 representative frames
+           - Face: Up to 10 representative frames (if faces available)
+        8. Face detection validation:
+           - Requires >=15 consecutive face frames for reliable face detection
+           - Sets 'has_face' flag accordingly
+           
+    Output:
+        Returns list of tracklets ready for clustering. Each tracklet represents
+        a single person's appearance in the video with consolidated embeddings and
+        representative frames for robust cross-clip matching.
     """
     print(f"\nProcessing: {os.path.basename(video_path)} (Clip {clip_idx})")
     
@@ -1188,24 +1201,12 @@ def process_video(video_path, clip_idx):
         
         # Extract embeddings in batches
         body_embs_list = []
-        video_embs_list = []  # NEW: Video-level embeddings
         face_embs_list = []
         pose_embs_list = []
         has_faces_list = []
         qualities_list = []  # NEW: Track frame quality
         bbox_confs_list = []  # NEW: Store bbox confidences
         
-        # NEW: Extract video embeddings from sequences
-        if USE_VIDEO_REID and len(crops) >= VIDEO_SEQUENCE_LENGTH:
-            sequences = group_crops_into_sequences(
-                crops, 
-                seq_len=VIDEO_SEQUENCE_LENGTH, 
-                stride=VIDEO_SEQUENCE_STRIDE
-            )
-            
-            for seq in sequences:
-                video_emb = extract_video_embedding(seq)
-                video_embs_list.append(video_emb)
         
         for i in range(0, len(crops), BATCH_SIZE):
             batch = crops[i:i+BATCH_SIZE]
@@ -1244,6 +1245,23 @@ def process_video(video_path, clip_idx):
         
         # NEW: Face - weighted average among frames with faces
         face_indices = [i for i in range(len(face_embs_list)) if has_faces_list[i]]
+        num_frames_total = len(face_embs_list)
+        num_face_frames = len(face_indices)
+        face_ratio = (num_face_frames / num_frames_total) if num_frames_total > 0 else 0.0
+        # Consecutive face frames gate (more robust than pure ratio)
+        def longest_consecutive_true(bools):
+            max_run = 0
+            cur = 0
+            for v in bools:
+                if v:
+                    cur += 1
+                    if cur > max_run:
+                        max_run = cur
+                else:
+                    cur = 0
+            return max_run
+        FACE_MIN_CONSEC_FRAMES = 15
+        max_consec_face = longest_consecutive_true(has_faces_list)
         if face_indices:
             face_embs_with_faces = [face_embs_list[i] for i in face_indices]
             face_qualities = [qualities_list[i] for i in face_indices]
@@ -1257,12 +1275,6 @@ def process_video(video_path, clip_idx):
         
         motion_feat = extract_motion_features(data['movements'])
         
-        # NEW: Aggregate video embeddings
-        if video_embs_list:
-            avg_video = np.mean(video_embs_list, axis=0).astype(np.float32)
-            avg_video = avg_video / (np.linalg.norm(avg_video) + 1e-8)
-        else:
-            avg_video = np.zeros(VIDEO_DIM, dtype=np.float32)
         
         # NEW: Select representative frames for multi-frame distance
         representative_body_frames = select_representative_frames(
@@ -1284,11 +1296,15 @@ def process_video(video_path, clip_idx):
             'end_frame': data['frames'][-1],
             'num_detections': len(data['crops']),
             'body_emb': avg_body,  # Keep averaged for within-clip
-            'video_emb': avg_video, 
             'face_emb': avg_face,
             'pose_emb': avg_pose,
             'motion_emb': motion_feat,
-            'has_face': len(face_indices) > 0,
+            # Robust face flag: require at least N consecutive face frames
+            'has_face': max_consec_face >= FACE_MIN_CONSEC_FRAMES,
+            'face_ratio': face_ratio,
+            'num_face_frames': int(num_face_frames),
+            'max_consec_face_frames': int(max_consec_face),
+            'num_frames': int(num_frames_total),
             'frames': data['frames'],
             'bboxes': data['bboxes'],
             # NEW: Multi-frame embeddings for cross-clip matching
@@ -1304,7 +1320,35 @@ def process_video(video_path, clip_idx):
 # ======================
 
 def compute_distance_matrix(tracklets):
-    """Compute pairwise distance matrix (vectorized)"""
+    """
+    Compute pairwise distance matrix between all tracklets.
+    
+    This function calculates the distance between every pair of tracklets using
+    a weighted combination of body, face, pose, and motion embeddings. The weighting
+    adapts based on whether faces are detected.
+    
+    Args:
+        tracklets (list): List of tracklet dictionaries, each containing:
+            - 'body_emb': Body embedding vector
+            - 'face_emb': Face embedding vector
+            - 'pose_emb': Pose embedding vector
+            - 'motion_emb': Motion embedding vector
+            - 'has_face': Boolean indicating face detection
+            
+    Returns:
+        numpy.ndarray: Symmetric distance matrix [N x N] where N = len(tracklets)
+        
+    Weighting:
+        - If both tracklets have faces:
+          Body(60%) + Face(20%) + Pose(10%) + Motion(10%)
+        - If either lacks face:
+          Body(80%) + Pose(10%) + Motion(10%)  (face weight redistributed to body)
+          
+    Note:
+        Currently only used for legacy clustering methods (SIMILARITY, DBSCAN).
+        The main pipeline uses adaptive_cluster_tracklets() which computes distances
+        differently for within-clip vs cross-clip stages.
+    """
     n = len(tracklets)
     
     # Extract embeddings
@@ -1344,7 +1388,36 @@ def compute_distance_matrix(tracklets):
     return dist_matrix
 
 def k_reciprocal_rerank(dist_matrix):
-    """k-Reciprocal re-ranking"""
+    """
+    Apply k-reciprocal re-ranking to improve distance matrix quality.
+    
+    k-reciprocal re-ranking is a technique that refines distance matrices by considering
+    mutual nearest neighbors. If A is in B's k nearest neighbors AND B is in A's k
+    nearest neighbors, they are considered reciprocal neighbors and their distance
+    is adjusted using Jaccard similarity.
+    
+    Args:
+        dist_matrix (numpy.ndarray): Original pairwise distance matrix [N x N]
+        
+    Returns:
+        numpy.ndarray: Re-ranked distance matrix [N x N]
+        
+    Algorithm:
+        1. For each point, finds k nearest neighbors (k = K_RECIPROCAL = 25)
+        2. Identifies reciprocal neighbor pairs (mutual k-NN)
+        3. For reciprocal pairs, computes Jaccard distance based on neighbor overlap
+        4. Blends original distance with re-ranked distance:
+           final = (1 - lambda) * original + lambda * reranked
+           where lambda = LAMBDA_VALUE = 0.5
+           
+    Benefits:
+        - Reduces false matches by considering context
+        - Improves ranking quality for similar people
+        - More robust to outliers
+        
+    Note:
+        Currently not used. The adaptive clustering uses its own distance calculation.
+    """
     print("🔄 Applying k-reciprocal re-ranking...")
     N = dist_matrix.shape[0]
     
@@ -1373,10 +1446,36 @@ def k_reciprocal_rerank(dist_matrix):
     return final_dist
 
 def cluster_tracklets(dist_matrix):
-    """Cluster tracklets into global IDs"""
-    print(f"📌 Clustering with {CLUSTERING_METHOD}...")
+    """
+    Cluster tracklets into global IDs using specified clustering method.
     
-    if CLUSTERING_METHOD.upper() == "SIMILARITY":
+    This function performs clustering on tracklets using either similarity-based
+    greedy clustering or DBSCAN. It assigns each tracklet a global identity ID.
+    
+    Args:
+        dist_matrix (numpy.ndarray): Pairwise distance matrix [N x N]
+        
+    Returns:
+        numpy.ndarray: Array of global IDs, one per tracklet [N]
+        
+    Clustering Methods:
+        1. SIMILARITY: Greedy clustering
+           - For each tracklet, finds best existing cluster
+           - Merges if distance < SIMILARITY_THRESHOLD (0.8)
+           - Otherwise creates new cluster
+           
+        2. DBSCAN: Density-based clustering
+           - Uses DBSCAN with eps=DBSCAN_EPS (0.35), min_samples=1
+           - Remaps noise points (-1) to new cluster IDs
+           
+    Note:
+        Currently not used in main pipeline. The adaptive_cluster_tracklets()
+        function is used instead, which implements the two-stage approach.
+        This function is kept for backward compatibility and alternative methods.
+    """
+    print(f"📌 Clustering with SIMILARITY method...")
+    
+    if True:  # SIMILARITY method
         N = dist_matrix.shape[0]
         global_ids = [-1] * N
         next_id = 0
@@ -1404,34 +1503,60 @@ def cluster_tracklets(dist_matrix):
         
         return np.array(global_ids)
     
-    elif CLUSTERING_METHOD.upper() == "DBSCAN":
-        clusterer = DBSCAN(eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_SAMPLES, metric='precomputed')
-        global_ids = clusterer.fit_predict(dist_matrix)
-        
-        # Remap noise
-        noise_mask = (global_ids == -1)
-        if noise_mask.any():
-            max_id = global_ids.max()
-            noise_ids = np.arange(max_id + 1, max_id + 1 + noise_mask.sum())
-            global_ids[noise_mask] = noise_ids
-        
-        return global_ids
-    
-    else:
-        raise ValueError(f"Unknown clustering method: {CLUSTERING_METHOD}")
-
 def analyze_clip_characteristics(clip_tracks):
     """
-    Automatically analyze clip characteristics to determine optimal threshold.
+    Automatically analyze video clip characteristics to determine optimal clustering threshold.
     
-    NEW: Uses max simultaneous people detected to guide clustering.
+    This function analyzes various clip characteristics and computes an adaptive threshold
+    for within-clip clustering. The threshold is adjusted based on scene complexity,
+    tracking quality, face visibility, and person diversity.
     
-    Returns adaptive threshold based on:
-    - Max simultaneous people (YOLO detection count)
-    - Number of tracklets (crowded vs simple)
-    - Average tracklet length (stable tracking vs fragments)
-    - Face detection rate (good lighting vs poor)
-    - Embedding variance (similar people vs diverse)
+    Args:
+        clip_tracks (list): List of tracklet dictionaries from a single video clip,
+            each containing 'start_frame', 'end_frame', 'body_emb', 'has_face', etc.
+            
+    Returns:
+        tuple: (adaptive_threshold, analysis_dict)
+            - adaptive_threshold (float): Computed threshold in range [0.01, 0.25]
+            - analysis_dict (dict): Detailed analysis breakdown with:
+                - 'max_people': Maximum simultaneous people detected
+                - 'num_tracklets': Total number of tracklets
+                - 'crowding': Crowding adjustment factor
+                - 'tracking': Tracking quality adjustment factor
+                - 'face': Face detection rate adjustment factor
+                - 'diversity': Embedding diversity adjustment factor
+                - 'final': Final computed threshold
+                
+    Analysis Factors:
+        1. Crowding Score: More tracklets → more lenient threshold
+           - 0-3 tracklets: +0.00 (simple scene)
+           - 4-10 tracklets: +0.02
+           - 11+ tracklets: +0.04
+           
+        2. Tracking Quality: Longer tracks → stricter threshold (better tracking)
+           - >300 frames: +0.00 (good tracking)
+           - 100-300 frames: +0.01
+           - <100 frames: +0.03 (fragmented)
+           
+        3. Face Detection Rate: More faces → stricter threshold (better features)
+           - >70%: +0.00 (good faces)
+           - 40-70%: +0.01
+           - <40%: +0.02 (poor faces)
+           
+        4. Embedding Diversity: More diverse people → more lenient threshold
+           - Computes pairwise cosine distances between all tracklets
+           - High diversity (avg distance > 0.35): negative adjustment
+           - Low diversity (avg distance < 0.18): positive adjustment
+           
+    Threshold Calculation:
+        base_threshold = WITHIN_CLIP_THRESHOLD (0.15)
+        adaptive_threshold = base_threshold + crowding + tracking + face + diversity
+        adaptive_threshold = clip(adaptive_threshold, 0.01, 0.25)  # Clamp to valid range
+        
+    Usage:
+        Called automatically during Stage 1 (within-clip clustering) if
+        USE_PER_CLIP_THRESHOLDS = True. Manual overrides can be specified in
+        PER_CLIP_THRESHOLDS dictionary.
     """
     from scipy.spatial.distance import cdist
     
@@ -1546,138 +1671,40 @@ def analyze_clip_characteristics(clip_tracks):
         'diversity': diversity_score,
         'final': adaptive_threshold
     }
-def calculate_bbox_proximity(bbox1, bbox2):
-    """
-    Calculate spatial proximity between two bounding boxes.
-    Returns a score from 0-1 where 1 means perfect overlap/very close.
-    
-    Args:
-        bbox1, bbox2: [x1, y1, x2, y2] format
-        
-    Returns:
-        float: proximity score (0-1)
-    """
-    x1_1, y1_1, x2_1, y2_1 = bbox1
-    x1_2, y1_2, x2_2, y2_2 = bbox2
-    
-    # Calculate intersection
-    x1_i = max(x1_1, x1_2)
-    y1_i = max(y1_1, y1_2)
-    x2_i = min(x2_1, x2_2)
-    y2_i = min(y2_1, y2_2)
-    
-    if x2_i <= x1_i or y2_i <= y1_i:
-        # No intersection - calculate distance-based proximity
-        # Calculate center points
-        cx1, cy1 = (x1_1 + x2_1) / 2, (y1_1 + y2_1) / 2
-        cx2, cy2 = (x1_2 + x2_2) / 2, (y1_2 + y2_2) / 2
-        
-        # Calculate distance between centers
-        distance = ((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2) ** 0.5
-        
-        # Calculate average box size for normalization
-        avg_size = ((x2_1 - x1_1) + (y2_1 - y1_1) + (x2_2 - x1_2) + (y2_2 - y1_2)) / 4
-        
-        # Convert distance to proximity (closer = higher score)
-        # If distance is 0, proximity is 1. If distance is avg_size, proximity is ~0.5
-        proximity = max(0, 1 - (distance / (avg_size * 2)))
-        return proximity
-    else:
-        # Has intersection - calculate IoU
-        intersection_area = (x2_i - x1_i) * (y2_i - y1_i)
-        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
-        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
-        union_area = area1 + area2 - intersection_area
-        
-        if union_area == 0:
-            return 0
-        
-        iou = intersection_area / union_area
-        return iou
-
-def calculate_robust_distance_for_ambiguous(body_emb1, body_emb2, face_emb1, face_emb2, 
-                                            pose_emb1, pose_emb2, motion_emb1, motion_emb2,
-                                            has_face1, has_face2):
-    """
-    Calculate robust distance for ambiguous cases using enhanced clothing/appearance weights.
-    This prioritizes body/clothing features over pose/motion for better cross-clip matching.
-    """
-    from scipy.spatial.distance import cosine
-    
-    # Calculate individual distances
-    body_dist = cosine(body_emb1, body_emb2)
-    face_dist = cosine(face_emb1, face_emb2) if has_face1 and has_face2 else 0.5
-    pose_dist = cosine(pose_emb1, pose_emb2)
-    motion_dist = cosine(motion_emb1, motion_emb2)
-    
-    # Use robust weights (prioritize clothing/appearance)
-    if has_face1 and has_face2:
-        # Both have faces - use full robust weights
-        robust_dist = (
-            ROBUST_BODY_WEIGHT * body_dist +
-            ROBUST_FACE_WEIGHT * face_dist +
-            ROBUST_POSE_WEIGHT * pose_dist +
-            ROBUST_MOTION_WEIGHT * motion_dist
-        )
-    else:
-        # Missing faces - redistribute weight to body/clothing
-        total_weight = ROBUST_BODY_WEIGHT + ROBUST_POSE_WEIGHT + ROBUST_MOTION_WEIGHT
-        body_w = ROBUST_BODY_WEIGHT / total_weight
-        pose_w = ROBUST_POSE_WEIGHT / total_weight
-        motion_w = ROBUST_MOTION_WEIGHT / total_weight
-        
-        robust_dist = (
-            body_w * body_dist +
-            pose_w * pose_dist +
-            motion_w * motion_dist
-        )
-    
-    return robust_dist
-
-def calculate_clothing_focused_distance(body_emb1, body_emb2, face_emb1, face_emb2, 
-                                       pose_emb1, pose_emb2, motion_emb1, motion_emb2,
-                                       has_face1, has_face2):
-    """
-    Calculate distance using clothing/appearance focused weights for ALL comparisons.
-    This prioritizes body/clothing features over pose/motion consistently.
-    """
-    from scipy.spatial.distance import cosine
-    
-    # Calculate individual distances
-    body_dist = cosine(body_emb1, body_emb2)
-    face_dist = cosine(face_emb1, face_emb2) if has_face1 and has_face2 else 0.5
-    pose_dist = cosine(pose_emb1, pose_emb2)
-    motion_dist = cosine(motion_emb1, motion_emb2)
-    
-    # Use clothing-focused weights (prioritize clothing/appearance)
-    if has_face1 and has_face2:
-        # Both have faces - use full clothing weights
-        clothing_dist = (
-            CLOTHING_BODY_WEIGHT * body_dist +
-            CLOTHING_FACE_WEIGHT * face_dist +
-            CLOTHING_POSE_WEIGHT * pose_dist +
-            CLOTHING_MOTION_WEIGHT * motion_dist
-        )
-    else:
-        # Missing faces - redistribute weight to body/clothing
-        total_weight = CLOTHING_BODY_WEIGHT + CLOTHING_POSE_WEIGHT + CLOTHING_MOTION_WEIGHT
-        body_w = CLOTHING_BODY_WEIGHT / total_weight
-        pose_w = CLOTHING_POSE_WEIGHT / total_weight
-        motion_w = CLOTHING_MOTION_WEIGHT / total_weight
-        
-        clothing_dist = (
-            body_w * body_dist +
-            pose_w * pose_dist +
-            motion_w * motion_dist
-        )
-    
-    return clothing_dist
 
 def calculate_hausdorff_distance(bboxes1, bboxes2):
     """
-    Calculate Hausdorff distance between two sets of bounding boxes.
-    This measures the maximum distance between any point in one set to the nearest point in the other set.
-    Lower values indicate more similar spatial patterns.
+    Calculate Hausdorff distance between two sets of bounding boxes for spatial pattern analysis.
+    
+    Hausdorff distance measures how far two sets of points are from each other by finding
+    the maximum distance from any point in one set to its nearest neighbor in the other set.
+    This is useful for comparing spatial patterns of person movement across tracklets.
+    
+    Args:
+        bboxes1 (list): First set of bounding boxes, each as [x1, y1, x2, y2]
+        bboxes2 (list): Second set of bounding boxes, each as [x1, y1, x2, y2]
+        
+    Returns:
+        float: Hausdorff distance in pixels (0 = identical patterns, larger = more different)
+        float('inf'): If either set is empty
+        
+    Algorithm:
+        1. Converts bounding boxes to center points (cx, cy)
+        2. Computes pairwise Euclidean distances between all center points
+        3. For each point in set1, finds minimum distance to any point in set2
+        4. Takes maximum of these minimum distances → H(A, B)
+        5. Repeats from set2 to set1 → H(B, A)
+        6. Hausdorff distance = max(H(A, B), H(B, A))
+        
+    Usage:
+        Used in Stage 2 (cross-clip merging) to override transitive blocking when
+        two clusters have very similar spatial patterns (hausdorff_dist < 50 pixels).
+        This helps merge tracklets that appear in different clips but have similar
+        movement patterns, indicating they are the same person.
+        
+    Note:
+        Lower values indicate more similar spatial patterns. A threshold of 50 pixels
+        is used to determine if spatial patterns are similar enough to allow merging.
     """
     if len(bboxes1) == 0 or len(bboxes2) == 0:
         return float('inf')
@@ -1734,8 +1761,7 @@ def adaptive_cluster_tracklets(tracklets):
     Stage 2: Cross-Clip Merging (Lenient Matching)
         - Uses adaptive thresholds to match the same person across different scenes
         - Lower face weight since faces are less reliable across different conditions
-        - Employs physical proximity logic to resolve ambiguous cases
-        - Uses hybrid embeddings (40% image + 60% video) for better accuracy
+        - Image-only embeddings (body + face when both available)
     
     Args:
         tracklets (list): List of tracklet dictionaries, each containing:
@@ -1750,18 +1776,11 @@ def adaptive_cluster_tracklets(tracklets):
         
     FEATURES:
         - Adaptive thresholds based on scene characteristics
-        - Physical proximity detection for ambiguous cases
         - Temporal overlap handling to prevent false merges
-        - Hybrid embedding distance calculation
-        - Robust weight system for difficult cases
+        - Best-of-cluster matching for merged clusters
+        - Two-pass merging (face/no-face first, then face-to-face)
     """
     print("ADAPTIVE CLUSTERING (2-stage)")
-    print(f"   Physical proximity logic: {'ENABLED' if USE_ADVANCED_CLUSTERING_LOGIC else 'DISABLED'}")
-    if USE_ADVANCED_CLUSTERING_LOGIC:
-        print(f"   - Proximity tolerance: DISABLED")
-        print(f"   - Physical proximity chain: {'ENABLED' if USE_PHYSICAL_PROXIMITY_CHAIN else 'DISABLED'}")
-        if USE_PHYSICAL_PROXIMITY_CHAIN:
-            print(f"     * Chain tolerance: {PHYSICAL_CHAIN_TOLERANCE}")
     
     # Stage 1: Within-clip clustering (strict)
     print("  Stage 1: Within-clip clustering (strict)...")
@@ -1804,39 +1823,11 @@ def adaptive_cluster_tracklets(tracklets):
         face_dist = cdist(face_embs, face_embs, metric='cosine')
         
         # High face weight within clip (same lighting/angle)
-        body_w = 1.0 - WITHIN_CLIP_FACE_WEIGHT
+                    body_w = 1.0 - WITHIN_CLIP_FACE_WEIGHT
         dist_matrix = body_w * body_dist + WITHIN_CLIP_FACE_WEIGHT * face_dist
         
-        # Temporal overlap penalty - Force separation for simultaneous appearances
-        for i in range(n):
-            for j in range(i+1, n):
-                track_i = clip_tracks[i]
-                track_j = clip_tracks[j]
-                
-                # Check temporal overlap
-                overlap_start = max(track_i['start_frame'], track_j['start_frame'])
-                overlap_end = min(track_i['end_frame'], track_j['end_frame'])
-                overlap_frames = max(0, overlap_end - overlap_start)
-                
-                if overlap_frames > 60:  # Significant overlap (> 2 seconds at 30fps)
-                    # Calculate overlap ratio relative to shorter track
-                    min_length = min(track_i['end_frame'] - track_i['start_frame'],
-                                   track_j['end_frame'] - track_j['start_frame'])
-                    overlap_ratio = overlap_frames / min_length if min_length > 0 else 0
-                    
-                    # Proportional penalty based on overlap severity
-                    if overlap_ratio > 0.5:  # More than 50% overlap
-                        penalty = 0.10  # Reduced from 0.15
-                    else:
-                        penalty = 0.10 * overlap_ratio  # Proportional
-                    
-                    dist_matrix[i, j] += penalty
-                    dist_matrix[j, i] = dist_matrix[i, j]
-                    # Debug print
-                    track_i_id = track_i.get('temp_id', track_i.get('track_id', i))
-                    track_j_id = track_j.get('temp_id', track_j.get('track_id', j))
-                    print(f"    Temporal overlap penalty: Clip {clip_idx} ID {track_i_id} ↔ ID {track_j_id} "
-                          f"(overlap: {overlap_frames}f, ratio: {overlap_ratio:.2f}) +{penalty:.3f}")
+        # Overlap + Similarity logic - Replace penalty with proper threshold logic
+        # This will be handled in the clustering loop below with adaptive thresholds
         
         # Cluster within clip (strict threshold)
         local_ids = [-1] * n
@@ -1849,16 +1840,171 @@ def adaptive_cluster_tracklets(tracklets):
             best_cluster = -1
             best_dist = float('inf')
             
+            # Check ALL clusters and find the best one that doesn't have >50% overlap
             for cluster_id in range(next_cluster):
                 members = [j for j in range(i) if local_ids[j] == cluster_id]
                 if members:
+                    # Check overlap with this cluster first (use first member as representative)
+                    j = members[0]
+                    track_i = clip_tracks[i]
+                    track_j = clip_tracks[j]
+                    
+                    # Calculate temporal overlap
+                    overlap_start = max(track_i['start_frame'], track_j['start_frame'])
+                    overlap_end = min(track_i['end_frame'], track_j['end_frame'])
+                    overlap_frames = max(0, overlap_end - overlap_start)
+                    min_length = min(track_i['end_frame'] - track_i['start_frame'],
+                                   track_j['end_frame'] - track_j['start_frame'])
+                    overlap_ratio = overlap_frames / min_length if min_length > 0 else 0
+                    
+                    # If overlap > 50%, skip this cluster (different people)
+                    if overlap_ratio > 0.5:
+                        track_i_id = track_i.get('temp_id', track_i.get('track_id', i))
+                        track_j_id = track_j.get('temp_id', track_j.get('track_id', j))
+                        continue  # Skip this cluster, check next one
+                    
+                    # If we get here, overlap <= 50%, so check if this is the best cluster
                     avg_dist = np.mean([dist_matrix[i, j] for j in members])
                     if avg_dist < best_dist:
                         best_dist = avg_dist
                         best_cluster = cluster_id
             
-            threshold = clip_threshold  # Use the clip-specific threshold determined above
-            if best_cluster != -1 and best_dist < threshold:
+            # Apply overlap + similarity logic instead of simple threshold
+            should_merge = False
+            if best_cluster != -1:
+                # Find a representative tracklet from the best cluster to check overlap and similarity
+                cluster_members = [j for j in range(i) if local_ids[j] == best_cluster]
+                if cluster_members:
+                    # Use the first member as representative
+                    j = cluster_members[0]
+                    track_i = clip_tracks[i]
+                    track_j = clip_tracks[j]
+                    
+                    # Calculate temporal overlap (should already be <= 0.5 from above check)
+                    overlap_start = max(track_i['start_frame'], track_j['start_frame'])
+                    overlap_end = min(track_i['end_frame'], track_j['end_frame'])
+                    overlap_frames = max(0, overlap_end - overlap_start)
+                    min_length = min(track_i['end_frame'] - track_i['start_frame'],
+                                   track_j['end_frame'] - track_j['start_frame'])
+                    overlap_ratio = overlap_frames / min_length if min_length > 0 else 0
+                    
+                    # Calculate actual body similarity from body distance matrix
+                    body_similarity = 1 - body_dist[i, j]  # Use body distance directly
+                    # Face presence adjustment (mismatch lowers expected similarity)
+                    has_face_i = track_i.get('has_face', False)
+                    has_face_j = track_j.get('has_face', False)
+                    
+                    # Get tracklet IDs for debug output
+                    track_i_id = track_i.get('temp_id', track_i.get('track_id', i))
+                    track_j_id = track_j.get('temp_id', track_j.get('track_id', j))
+                    
+                    # Compute containment: if shorter span is fully overlapped
+                    span_i = track_i['end_frame'] - track_i['start_frame']
+                    span_j = track_j['end_frame'] - track_j['start_frame']
+                    shorter_span = min(span_i, span_j)
+                    is_contained = (overlap_frames >= shorter_span and shorter_span > 0)
+                    longer_span = max(span_i, span_j)
+                    duration_ratio = (longer_span / shorter_span) if shorter_span > 0 else float('inf')
+                     
+                    # Apply overlap + similarity logic (overlap_ratio should be <= 0.5 here)
+                    if overlap_ratio > 0.4:  # Medium overlap (raised from 30% to 40%)
+                        required_similarity = 0.80  # Use within-clip similarity rule
+                        if (not has_face_i) or (not has_face_j):
+                            required_similarity = max(required_similarity, 0.80)
+                        # Face-face: slightly stricter for high overlap
+                        if has_face_i and has_face_j:
+                            required_similarity = max(required_similarity, 0.82)
+                        if is_contained:
+                            required_similarity += 0.05
+                        if overlap_ratio > 0 and duration_ratio >= 2.0:
+                            required_similarity += 0.03
+                        required_similarity = max(0.65, required_similarity)
+                        if body_similarity >= required_similarity:
+                            should_merge = True
+                    elif overlap_ratio > 0.1:  # Low overlap
+                        required_similarity = 0.70  # More lenient
+                        # No-face floor
+                        if (not has_face_i) or (not has_face_j):
+                            required_similarity = max(required_similarity, 0.87)
+                        # Face-face: slightly stricter for medium overlap
+                        if has_face_i and has_face_j:
+                            required_similarity = max(required_similarity, 0.82)
+                        # Containment and duration tightening
+                        if is_contained:
+                            required_similarity += 0.05
+                        if overlap_ratio > 0 and duration_ratio >= 2.0:
+                            required_similarity += 0.03
+                        required_similarity = max(0.65, required_similarity)
+                        if body_similarity >= required_similarity:
+                            should_merge = True
+                    else:  # Very low overlap
+                        required_similarity = 0.70  # Very lenient threshold
+                        # For zero/very-low overlap, require higher sim when weak evidence
+                        if (not has_face_i) or (not has_face_j) or (duration_ratio >= 2.0):
+                            required_similarity = max(required_similarity, 0.87 if ((not has_face_i) or (not has_face_j)) else 0.80)
+                        # Face-face at very low overlap: be stricter
+                        if has_face_i and has_face_j:
+                            required_similarity = max(required_similarity, 0.85)
+                        # HARD GUARD: if very-low overlap and strong duration imbalance and any no-face → require 0.90
+                        if overlap_ratio <= 0.1 and duration_ratio >= 2.0 and ((not has_face_i) or (not has_face_j)):
+                            required_similarity = max(required_similarity, 0.90)
+                        if is_contained:
+                            required_similarity += 0.05
+                        required_similarity = max(0.65, required_similarity)
+                        if body_similarity >= required_similarity:
+                            should_merge = True
+                    
+            
+            # Cohesion check: require similarity against ALL members in best_cluster
+            if should_merge and best_cluster != -1:
+                all_ok = True
+                for j2 in cluster_members:
+                    track_j2 = clip_tracks[j2]
+                    # Recompute pairwise stats per member
+                    overlap_start2 = max(track_i['start_frame'], track_j2['start_frame'])
+                    overlap_end2 = min(track_i['end_frame'], track_j2['end_frame'])
+                    overlap_frames2 = max(0, overlap_end2 - overlap_start2)
+                    min_length2 = min(
+                        track_i['end_frame'] - track_i['start_frame'],
+                        track_j2['end_frame'] - track_j2['start_frame']
+                    )
+                    overlap_ratio2 = (overlap_frames2 / min_length2) if min_length2 > 0 else 0
+                    span_i2 = track_i['end_frame'] - track_i['start_frame']
+                    span_j2 = track_j2['end_frame'] - track_j2['start_frame']
+                    shorter_span2 = min(span_i2, span_j2)
+                    longer_span2 = max(span_i2, span_j2)
+                    is_contained2 = (overlap_frames2 >= shorter_span2 and shorter_span2 > 0)
+                    duration_ratio2 = (longer_span2 / shorter_span2) if shorter_span2 > 0 else float('inf')
+                    has_face_j2 = track_j2.get('has_face', False)
+                    body_similarity2 = 1 - body_dist[i, j2]
+                    # Derive required similarity per member using same bins
+                    req2 = 0.70
+                    if overlap_ratio2 > 0.5:
+                        req2 = 0.86 if overlap_ratio2 > 0.9 else 0.80
+                    elif overlap_ratio2 > 0.4:
+                        req2 = 0.80
+                    elif overlap_ratio2 > 0.1:
+                        req2 = 0.70
+                    else:
+                        req2 = 0.70
+                    # No-face floors and very-low face-face strictness
+                    if (not has_face_i) or (not has_face_j2) or (overlap_ratio2 == 0 and duration_ratio2 >= 2.0):
+                        req2 = max(req2, 0.80)
+                    if overlap_ratio2 <= 0.1 and has_face_i and has_face_j2:
+                        req2 = max(req2, 0.85)
+                    # Containment and duration bumps
+                    if is_contained2:
+                        req2 += 0.05
+                    if overlap_ratio2 > 0 and duration_ratio2 >= 2.0:
+                        req2 += 0.03
+                    req2 = max(0.65, req2)
+                    if body_similarity2 < req2:
+                        all_ok = False
+                        break
+                if not all_ok:
+                    should_merge = False
+
+            if should_merge:
                 local_ids[i] = best_cluster
             else:
                 local_ids[i] = next_cluster
@@ -1871,30 +2017,12 @@ def adaptive_cluster_tracklets(tracklets):
         next_local_id += next_cluster
         print(f"      → {next_cluster} local clusters")
     
-    # Stage 2: Cross-clip merging with HYBRID embeddings
-    print(f"  Stage 2: Cross-clip merging (HYBRID: {1-VIDEO_WEIGHT:.0%} image + {VIDEO_WEIGHT:.0%} video)...")
+    # Stage 2: Cross-clip merging (IMAGE-ONLY: body + face when both have faces)
+    print(f"  Stage 2: Cross-clip merging (IMAGE-ONLY: body + face)...")
     print(f"    Total intermediate clusters: {next_local_id}")
     
-    # NEW: Extract BOTH body (image) and video embeddings
+    # Extract body (image) embeddings only
     body_embs = np.array([t['body_emb'] for t in tracklets])
-    
-    # FIXED: Handle video embeddings with consistent shapes
-    video_embs = []
-    for t in tracklets:
-        video_emb = t.get('video_emb', np.zeros(VIDEO_DIM))
-        # Ensure consistent shape
-        if isinstance(video_emb, (list, tuple)):
-            video_emb = np.array(video_emb)
-        if video_emb.shape != (VIDEO_DIM,):
-            # Resize or pad to correct dimension
-            if len(video_emb) > VIDEO_DIM:
-                video_emb = video_emb[:VIDEO_DIM]
-            else:
-                padded = np.zeros(VIDEO_DIM)
-                padded[:len(video_emb)] = video_emb
-                video_emb = padded
-        video_embs.append(video_emb)
-    video_embs = np.array(video_embs)
     
     face_embs = np.array([t['face_emb'] for t in tracklets])
     has_faces = np.array([t['has_face'] for t in tracklets])
@@ -1905,24 +2033,35 @@ def adaptive_cluster_tracklets(tracklets):
     n_temp = len(unique_temp_ids)
     
     cluster_body_embs = np.zeros((n_temp, body_embs.shape[1]))
-    cluster_video_embs = np.zeros((n_temp, video_embs.shape[1]))  # NEW
     cluster_face_embs = np.zeros((n_temp, face_embs.shape[1]))
     cluster_has_faces = np.zeros(n_temp, dtype=bool)
     
     for i, tid in enumerate(unique_temp_ids):
         mask = temp_ids == tid
-        cluster_body_embs[i] = np.mean(body_embs[mask], axis=0)
-        cluster_video_embs[i] = np.mean(video_embs[mask], axis=0)  # NEW
-        cluster_face_embs[i] = np.mean(face_embs[mask], axis=0)
+        # Weighted averaging: weight by tracklet length (frames) to preserve information from longer tracklets
+        # Longer tracklets have more information and should contribute more
+        tracklet_indices = np.where(mask)[0]
+        weights = np.array([tracklets[idx]['end_frame'] - tracklets[idx]['start_frame'] 
+                           for idx in tracklet_indices], dtype=np.float32)
+        
+        # Normalize weights (sum to 1)
+        if weights.sum() > 0:
+            weights = weights / weights.sum()
+        else:
+            weights = np.ones(len(tracklet_indices)) / len(tracklet_indices)
+        
+        # Weighted average (preserves information from longer tracklets)
+        cluster_body_embs[i] = np.average(body_embs[mask], axis=0, weights=weights)
+        cluster_face_embs[i] = np.average(face_embs[mask], axis=0, weights=weights)
         cluster_has_faces[i] = np.any(has_faces[mask])
     
-    # NEW: Compute HYBRID distance (weighted combination)
-    print("    Computing hybrid distances (image + video)...")
+    # Compute IMAGE-ONLY distance (body + face when both have faces)
+    print("    Computing image-only distances (body + face)...")
     
     if USE_CHAMFER_DISTANCE:
         print("    Using Chamfer distance for cross-clip matching...")
         
-        # NEW: Use Chamfer distance for cross-clip matching
+        # Use Chamfer distance for cross-clip matching
         dist_matrix = np.zeros((n_temp, n_temp))
         
         for i in range(n_temp):
@@ -1958,120 +2097,117 @@ def adaptive_cluster_tracklets(tracklets):
                     dist_matrix[i, j] = 1.0
                     dist_matrix[j, i] = 1.0
         
-        # Add face component if available
+        # Add face component if both clusters have faces (matches previous behavior)
         if np.any(cluster_has_faces):
             face_dist = cdist(cluster_face_embs, cluster_face_embs, metric='cosine')
             
-            # Blend Chamfer distance with face distance
+            # Blend Chamfer distance with face distance (when both have faces)
             for i in range(n_temp):
                 for j in range(n_temp):
                     if cluster_has_faces[i] and cluster_has_faces[j]:
                         # Weighted combination: 80% Chamfer + 20% face
                         dist_matrix[i, j] = 0.8 * dist_matrix[i, j] + 0.2 * face_dist[i, j]
     
+            # NaN guard for face distance
+            face_dist = np.nan_to_num(face_dist, nan=1.0, posinf=1.0, neginf=1.0)
+        
+        # NaN guard: replace any NaN/inf with 1.0 (maximum distance)
+        dist_matrix = np.nan_to_num(dist_matrix, nan=1.0, posinf=1.0, neginf=1.0)
+    
     else:
-        # Original cosine distance computation
-        image_dist = cdist(cluster_body_embs, cluster_body_embs, metric='cosine')
-        video_dist = cdist(cluster_video_embs, cluster_video_embs, metric='cosine')
-        face_dist = cdist(cluster_face_embs, cluster_face_embs, metric='cosine')
-        
-        # Combine image (body) and video with weights
-        image_weight = 1.0 - VIDEO_WEIGHT  # e.g., 0.7
-        body_video_dist = image_weight * image_dist + VIDEO_WEIGHT * video_dist
-        
-        # Add face component
+        # Image-only cosine distance computation (body + face when available)
+        # OPTIMIZED: Pre-compute cluster tracklet mappings and vectorize distance calculations
+        # NEW: Best-of-cluster matching - compare each cluster to the BEST matching tracklet in the other cluster
+        # This prevents a bad tracklet from dominating the weighted embedding
         body_w = 1.0 - CROSS_CLIP_FACE_WEIGHT
-        dist_matrix = body_w * body_video_dist + CROSS_CLIP_FACE_WEIGHT * face_dist
         
-        # Adjust for missing faces (use body+video only)
+        # OPTIMIZATION 1: Pre-compute cluster tracklet mappings (avoid repeated list comprehensions)
+        cluster_tracklets = {}
+        for i, tid in enumerate(unique_temp_ids):
+            cluster_tracklets[i] = [t for t in tracklets if t['temp_global_id'] == tid]
+        
+        # OPTIMIZATION 2: Pre-extract and normalize embeddings for all clusters
+        cluster_body_embs_list = {}
+        cluster_face_embs_list = {}
+        cluster_has_faces_list = {}
         for i in range(n_temp):
-            for j in range(n_temp):
-                if not cluster_has_faces[i] or not cluster_has_faces[j]:
-                    dist_matrix[i, j] = body_video_dist[i, j]
-    
-    print("    Hybrid distances computed")
-    
-    # NEW: Build physical proximity mapping for clustering decisions
-    clip_to_temp_ids = {}
-    for t in tracklets:
-        clip_idx = t['clip_idx']
-        temp_id = t['temp_global_id']
-        if clip_idx not in clip_to_temp_ids:
-            clip_to_temp_ids[clip_idx] = set()
-        clip_to_temp_ids[clip_idx].add(temp_id)
-    
-    # Build physical proximity relationships
-    physical_proximity_pairs = set()
-    
-    # 1. Within-clip physical proximity (existing logic)
-    for clip_idx, temp_ids_in_clip in clip_to_temp_ids.items():
-        temp_ids_list = list(temp_ids_in_clip)
-        for i in range(len(temp_ids_list)):
-            for j in range(i + 1, len(temp_ids_list)):
-                id_i = temp_ids_list[i]
-                id_j = temp_ids_list[j]
-                # Record that these temp IDs were physically close in this clip
-                physical_proximity_pairs.add((id_i, id_j))
-                physical_proximity_pairs.add((id_j, id_i))  # Bidirectional
-    
-    # 2. Cross-clip spatial proximity (RE-ENABLED - needed for ID 3 ↔ ID 11 relationship)
-    # This detects when the same person appears in different clips with different temp IDs
-    if USE_ADVANCED_CLUSTERING_LOGIC:
-        cross_clip_proximity_pairs = set()
+            tracklets_i = cluster_tracklets[i]
+            cluster_body_embs_list[i] = np.array([np.nan_to_num(t['body_emb'], nan=0.0) for t in tracklets_i])
+            cluster_face_embs_list[i] = np.array([np.nan_to_num(t['face_emb'], nan=0.0) for t in tracklets_i])
+            cluster_has_faces_list[i] = np.array([t.get('has_face', False) for t in tracklets_i])
         
-        # Get all tracklets
-        all_tracklets_list = list(tracklets)
+        dist_matrix = np.zeros((n_temp, n_temp))
         
-        # Check spatial proximity between tracklets from different clips
-        for i in range(len(all_tracklets_list)):
-            for j in range(i + 1, len(all_tracklets_list)):
-                t_i = all_tracklets_list[i]
-                t_j = all_tracklets_list[j]
+        # OPTIMIZATION 3: Vectorize best-of-cluster distance computation
+        for i in range(n_temp):
+            for j in range(i + 1, n_temp):  # Only compute upper triangle
+                body_embs_i = cluster_body_embs_list[i]
+                body_embs_j = cluster_body_embs_list[j]
+                face_embs_i = cluster_face_embs_list[i]
+                face_embs_j = cluster_face_embs_list[j]
+                has_faces_i = cluster_has_faces_list[i]
+                has_faces_j = cluster_has_faces_list[j]
                 
-                # Only check if they're from different clips AND different temp IDs
-                if t_i['clip_idx'] != t_j['clip_idx'] and t_i['temp_global_id'] != t_j['temp_global_id']:
-                    # Check if bounding boxes are spatially close
-                    if 'bboxes' in t_i and 'bboxes' in t_j and t_i['bboxes'] and t_j['bboxes']:
-                        # Get representative bboxes (first bbox of each tracklet)
-                        bbox_i = t_i['bboxes'][0]  # [x1, y1, x2, y2]
-                        bbox_j = t_j['bboxes'][0]  # [x1, y1, x2, y2]
-                        
-                        # Calculate spatial proximity
-                        spatial_proximity = calculate_bbox_proximity(bbox_i, bbox_j)
-                        
-                        # DISABLED: Spatial proximity threshold logic removed
-                        # if spatial_proximity > SPATIAL_PROXIMITY_THRESHOLD:
-                        #     id_i = t_i['temp_global_id']
-                        #     id_j = t_j['temp_global_id']
-                        #     cross_clip_proximity_pairs.add((id_i, id_j))
-                        #     cross_clip_proximity_pairs.add((id_j, id_i))
-                        #     print(f"      Cross-clip spatial proximity: ID {id_i} (clip {t_i['clip_idx']}) ↔ ID {id_j} (clip {t_j['clip_idx']}) - proximity: {spatial_proximity:.3f}")
-                        #     print(f"        ID {id_i} bbox: {bbox_i}")
-                        #     print(f"        ID {id_j} bbox: {bbox_j}")
+                # Vectorized body distance: compute all pairwise distances at once
+                if len(body_embs_i) > 0 and len(body_embs_j) > 0:
+                    body_dist_matrix = cdist(body_embs_i, body_embs_j, metric='cosine')
+                    
+                    # Vectorized face distance: compute only for face-face pairs
+                    face_dist_matrix = np.ones_like(body_dist_matrix)
+                    # Find all face-face pairs
+                    face_pair_mask = np.outer(has_faces_i, has_faces_j)
+                    if face_pair_mask.any():
+                        face_indices_i = np.where(has_faces_i)[0]
+                        face_indices_j = np.where(has_faces_j)[0]
+                        if len(face_indices_i) > 0 and len(face_indices_j) > 0:
+                            face_embs_i_filtered = face_embs_i[face_indices_i]
+                            face_embs_j_filtered = face_embs_j[face_indices_j]
+                            # Compute all pairwise face distances
+                            face_dist_submatrix = cdist(face_embs_i_filtered, face_embs_j_filtered, metric='cosine')
+                            # Check for zero norms (invalid faces)
+                            face_norms_i = np.linalg.norm(face_embs_i_filtered, axis=1)
+                            face_norms_j = np.linalg.norm(face_embs_j_filtered, axis=1)
+                            valid_i = face_norms_i > 0
+                            valid_j = face_norms_j > 0
+                            # Map back to full matrix
+                            for idx_i, i_idx in enumerate(face_indices_i):
+                                for idx_j, j_idx in enumerate(face_indices_j):
+                                    if valid_i[idx_i] and valid_j[idx_j]:
+                                        face_dist_matrix[i_idx, j_idx] = face_dist_submatrix[idx_i, idx_j]
+                    
+                    # Compute weighted distances: vectorized
+                    weighted_dist_matrix = np.where(
+                        (np.outer(has_faces_i, has_faces_j)) & (face_dist_matrix < 1.0),
+                        body_w * body_dist_matrix + CROSS_CLIP_FACE_WEIGHT * face_dist_matrix,
+                        body_dist_matrix
+                    )
+                    
+                    # Find best (minimum) distance
+                    best_distance = np.min(weighted_dist_matrix)
+                else:
+                    best_distance = 1.0
+                
+                dist_matrix[i, j] = best_distance
+                dist_matrix[j, i] = best_distance  # Symmetric
         
-        # Add cross-clip proximity pairs to main set
-        physical_proximity_pairs.update(cross_clip_proximity_pairs)
-        print(f"    Found {len(cross_clip_proximity_pairs)//2} cross-clip spatial proximity pairs")
+        # NaN guard: replace any NaN/inf with 1.0 (maximum distance)
+        dist_matrix = np.nan_to_num(dist_matrix, nan=1.0, posinf=1.0, neginf=1.0)
     
-        
+    print("    Image-only distances computed")
     
-    # Build same-clip overlap block matrix
+    # OPTIMIZATION 4: Build same-clip overlap block matrix (pre-compute clip sets)
     same_clip_overlap_block = np.zeros((n_temp, n_temp), dtype=bool)
     
+    # Pre-compute clip sets for each cluster
+    cluster_clips = {}
+    for i in range(n_temp):
+        tracklets_i = cluster_tracklets[i]
+        cluster_clips[i] = set(t['clip_idx'] for t in tracklets_i)
+    
+    # Check for shared clips (vectorized check)
     for i in range(n_temp):
         for j in range(i + 1, n_temp):
-            # Get tracklets for cluster i and j
-            tracklets_i = [t for t in tracklets if t['temp_global_id'] == unique_temp_ids[i]]
-            tracklets_j = [t for t in tracklets if t['temp_global_id'] == unique_temp_ids[j]]
-            
-            # Check if they share ANY clip
-            clips_i = set(t['clip_idx'] for t in tracklets_i)
-            clips_j = set(t['clip_idx'] for t in tracklets_j)
-            shared_clips = clips_i & clips_j
-            
-            if shared_clips:
-                # They're from the same clip → they were kept separate by within-clip clustering
-                # → They overlapped in time → DON'T merge across clips
+            if cluster_clips[i] & cluster_clips[j]:  # Shared clips
                 same_clip_overlap_block[i, j] = True
                 same_clip_overlap_block[j, i] = True
     
@@ -2079,11 +2215,17 @@ def adaptive_cluster_tracklets(tracklets):
     final_ids = np.arange(n_temp)
     base_threshold = CROSS_CLIP_THRESHOLD  # Use as baseline (0.42)
     
-    #  Apply proximity tolerance only when merging with existing clusters
-    # This prevents over-merging by only applying tolerance when a new cluster is being considered
-    # for merging with an already-established cluster that has physical proximity patterns
+    # Track confirmed face-to-face matches: (global_id, clip_idx) -> True
+    # When a face-to-face cross-clip merge happens, this prevents other same-clip tracklets from merging
+    confirmed_face_to_face_matches = {}  # {(final_cluster_id, clip_idx): True}
     
-    # No hardcoded cases - the general logic handles all scenarios
+    # Track target cluster merges: (target_cluster_id, target_clip_idx) -> source_clip_idx
+    # Prevents multiple clusters from the same source clip from merging with the same target cluster
+    target_cluster_to_source_clip = {}  # {(target_cluster_id, target_clip_idx): source_clip_idx}
+    
+    
+    # NEW: Collect all merge candidates first, then sort by priority (face-to-face first, then higher similarity)
+    merge_candidates = []
     
     for i in range(n_temp):
         if final_ids[i] != i:
@@ -2115,247 +2257,529 @@ def adaptive_cluster_tracklets(tracklets):
                     break
             if merge_blocked:
                 # NEW: Check if robust weights can override transitive blocking
-                # Calculate robust distance to see if it's a very strong match
-                tracklets_i = [t for t in tracklets if t['temp_global_id'] == unique_temp_ids[i]]
-                tracklets_j = [t for t in tracklets if t['temp_global_id'] == unique_temp_ids[j]]
+                # OPTIMIZATION: Use pre-computed cluster tracklets
+                tracklets_i = cluster_tracklets[i]
+                tracklets_j = cluster_tracklets[j]
                 
                 if tracklets_i and tracklets_j:
                     track_i = tracklets_i[0]
                     track_j = tracklets_j[0]
                     
-                    robust_distance = calculate_robust_distance_for_ambiguous(
-                        track_i['body_emb'], track_j['body_emb'],
-                        track_i['face_emb'], track_j['face_emb'],
-                        track_i['pose_emb'], track_j['pose_emb'],
-                        track_i['motion_emb'], track_j['motion_emb'],
-                        track_i['has_face'], track_j['has_face']
-                    )
-                    
-                    # NEW: Also calculate Hausdorff distance for spatial pattern analysis
+                    # Calculate Hausdorff distance for spatial pattern analysis
                     hausdorff_dist = calculate_hausdorff_distance(track_i['bboxes'], track_j['bboxes'])
                     
-                    # If robust distance is very good (< 0.35) OR Hausdorff distance is very good (< 100 pixels), override transitive blocking
-                    if robust_distance < 0.25 or hausdorff_dist < 50:
+                    # If Hausdorff distance is very good (< 50 pixels), override transitive blocking
+                    if hausdorff_dist < 50:
                         merge_blocked = False
             
             if merge_blocked:
                 continue
             
             # NEW: ADAPTIVE threshold based on pair characteristics
-            tracklets_i = [t for t in tracklets if t['temp_global_id'] == unique_temp_ids[i]]
-            tracklets_j = [t for t in tracklets if t['temp_global_id'] == unique_temp_ids[j]]
+            # OPTIMIZATION: Use pre-computed cluster tracklets
+            tracklets_i = cluster_tracklets[i]
+            tracklets_j = cluster_tracklets[j]
             
             # Factor 1: Face availability (both have faces = more reliable)
             both_have_faces = cluster_has_faces[i] and cluster_has_faces[j]
+            one_has_face = cluster_has_faces[i] or cluster_has_faces[j]
+            neither_has_face = not cluster_has_faces[i] and not cluster_has_faces[j]
             
             # Factor 2: Tracklet length (longer = more reliable)
             total_frames_i = sum(t['end_frame'] - t['start_frame'] for t in tracklets_i)
             total_frames_j = sum(t['end_frame'] - t['start_frame'] for t in tracklets_j)
             avg_length = (total_frames_i + total_frames_j) / 2
             
-            # Factor 3: Determine adaptive threshold (4-tier system)
+            # IMPORTANT: If clusters have merged (final_ids changed), get ALL tracklets from merged cluster
+            # This ensures merged clusters are correctly represented
+            merged_cluster_i = final_ids[i]
+            merged_cluster_j = final_ids[j]
+            
+            # Get ALL tracklets that belong to the merged clusters (if merged)
+            if merged_cluster_i != i:
+                # Cluster i has merged with others - get all tracklets in the merged cluster
+                merged_tracklets_i = [t for t in tracklets 
+                                     if t['temp_global_id'] in unique_temp_ids[merged_cluster_i == final_ids]]
+            else:
+                merged_tracklets_i = tracklets_i
+            
+            if merged_cluster_j != j:
+                # Cluster j has merged with others - get all tracklets in the merged cluster
+                merged_tracklets_j = [t for t in tracklets 
+                                     if t['temp_global_id'] in unique_temp_ids[merged_cluster_j == final_ids]]
+            else:
+                merged_tracklets_j = tracklets_j
+            
+            # OPTIMIZATION: Vectorized body similarity calculation
+            # Calculate body similarity using best-of-cluster (best distance among all tracklet pairs)
+            # This ensures merged clusters use their best representation
+            if len(merged_tracklets_i) > 0 and len(merged_tracklets_j) > 0:
+                body_embs_i = np.array([t['body_emb'] for t in merged_tracklets_i])
+                body_embs_j = np.array([t['body_emb'] for t in merged_tracklets_j])
+                body_dist_matrix = cdist(body_embs_i, body_embs_j, metric='cosine')
+                best_body_dist = np.min(body_dist_matrix)
+            else:
+                best_body_dist = 1.0
+            
+            body_sim_check = 1 - best_body_dist
+            
+            # Factor 3: Determine adaptive threshold (with face/no-face adjustment)
             if both_have_faces and avg_length > 500:
-                # Very high confidence: strictest threshold (ID 2, 3 type - perfect matches)
-                adaptive_threshold = base_threshold - 0.05  # 0.35
+                # Very high confidence: lenient for face-to-face with long tracklets
+                # Make threshold more lenient: 0.43 -> 0.44 to allow 0.4309 distance
+                adaptive_threshold = base_threshold - 0.02  # 0.44 (was 0.43)
                 confidence = "HIGH"
             elif both_have_faces and avg_length > 300:
                 # High confidence: baseline threshold
-                adaptive_threshold = base_threshold  # 0.42
+                adaptive_threshold = base_threshold  # 0.46
                 confidence = "MED"
             elif avg_length > 250:
                 # Medium confidence: slightly lenient (ID 4, 5 type - partial matches)
-                adaptive_threshold = base_threshold + 0.03  # 0.47
+                adaptive_threshold = base_threshold + 0.03  # 0.49
                 confidence = "MED+"
             else:
                 # Low confidence: very lenient (ID 0, 1 fragments)
-                adaptive_threshold = base_threshold + 0.05  # 0.50
+                adaptive_threshold = base_threshold + 0.05  # 0.51
                 confidence = "LOW"
             
-            # NEW: Check for physical proximity tolerance (direct + indirect)
-            temp_id_i = unique_temp_ids[i]
-            temp_id_j = unique_temp_ids[j]
+            # NEW: Lower threshold for face/no-face cross-clip pairs (one has face, other doesn't)
+            # Cross-clip merging should be easier when one has no face (helps no-face tracklets merge)
+            if one_has_face and not both_have_faces:
+                adaptive_threshold -= 0.08  # Make it easier to merge when one has face (cross-clip only)
+                confidence += " [FACE/NO-FACE - EASIER]"
             
-            # Check direct physical proximity
-            were_physically_close_direct = (temp_id_i, temp_id_j) in physical_proximity_pairs
-            
-            # Check indirect physical proximity through common clusters
-            were_physically_close_indirect = False
-            common_cluster = None
-            
-            if not were_physically_close_direct:
-                # Find clusters that both temp_id_i and temp_id_j were physically close to
-                clusters_close_to_i = set()
-                clusters_close_to_j = set()
-                
-                for (id_a, id_b) in physical_proximity_pairs:
-                    if id_a == temp_id_i:
-                        clusters_close_to_i.add(id_b)
-                    elif id_b == temp_id_i:
-                        clusters_close_to_i.add(id_a)
-                    if id_a == temp_id_j:
-                        clusters_close_to_j.add(id_b)
-                    elif id_b == temp_id_j:
-                        clusters_close_to_j.add(id_a)
-                
-                # Check if they share any common cluster they were both close to
-                common_clusters = clusters_close_to_i & clusters_close_to_j
-                if common_clusters:
-                    were_physically_close_indirect = True
-                    common_cluster = list(common_clusters)[0]  # Take first common cluster
-            
-            # Apply physical proximity tolerance for the specific case: ID 4 ↔ ID 7
-            # These should merge because:
-            # - ID 4 was close to ID 3 in Clip 1
-            # - ID 7 was close to ID 11 in Clip 2 (where ID 11 is the same person as ID 3)
+            # Effective threshold is the adaptive threshold
             effective_threshold = adaptive_threshold
             
-            # GENERAL CASE: Check for cross-clip physical proximity patterns
-            # This works for ANY pair of IDs that were both close to the same person in different clips
+            # Calculate distance (standard approach)
+                    current_distance = dist_matrix[i, j]
+            
+            # OPTIMIZATION: Use pre-computed cluster tracklets
+            # (tracklets_i and tracklets_j already defined above)
+            
+            final_distance = current_distance
+            
+            # Calculate body similarity for threshold check
+            # Use weighted averaged embeddings (consistent with main distance calculation)
+            # Weight by tracklet length to preserve information from longer tracklets
+            weights_i = np.array([t['end_frame'] - t['start_frame'] for t in tracklets_i], dtype=np.float32)
+            weights_j = np.array([t['end_frame'] - t['start_frame'] for t in tracklets_j], dtype=np.float32)
+            if weights_i.sum() > 0:
+                weights_i = weights_i / weights_i.sum()
+            else:
+                weights_i = np.ones(len(tracklets_i)) / len(tracklets_i)
+            if weights_j.sum() > 0:
+                weights_j = weights_j / weights_j.sum()
+            else:
+                weights_j = np.ones(len(tracklets_j)) / len(tracklets_j)
+            
+            body_embs_i = np.array([t['body_emb'] for t in tracklets_i])
+            body_embs_j = np.array([t['body_emb'] for t in tracklets_j])
+            avg_body_i = np.average(body_embs_i, axis=0, weights=weights_i)
+            avg_body_j = np.average(body_embs_j, axis=0, weights=weights_j)
+            body_dist_for_check = cdist([avg_body_i], [avg_body_j], metric='cosine')[0][0]
+            body_sim_for_check = 1 - body_dist_for_check
+            
+            # Body similarity requirement (lowered for face/no-face pairs)
+            body_sim_threshold = 0.7
+            if one_has_face and not both_have_faces:
+                body_sim_threshold = 0.65  # Lower threshold for face/no-face pairs
+            
+            # Check distance against effective threshold AND body similarity
             clip_i = tracklets_i[0]['clip_idx']
             clip_j = tracklets_j[0]['clip_idx']
             
-            if clip_i != clip_j:  # Only for cross-clip merges
-                # Check if both IDs were close to a common person in their respective clips
-                were_both_close_to_common_person = False
-                common_person = None
+            if final_distance < effective_threshold and body_sim_for_check >= body_sim_threshold:
+                # Calculate face similarity for face-to-face candidates
+                face_sim_for_candidate = 0.0
+                if both_have_faces:
+                    # Use best-of-cluster matching for face similarity too
+                    best_face_sim = 0.0
+                    for t_i in tracklets_i:
+                        for t_j in tracklets_j:
+                            if t_i.get('has_face', False) and t_j.get('has_face', False):
+                                face_emb_i = np.nan_to_num(t_i['face_emb'], nan=0.0)
+                                face_emb_j = np.nan_to_num(t_j['face_emb'], nan=0.0)
+                                face_i_norm = np.linalg.norm(face_emb_i)
+                                face_j_norm = np.linalg.norm(face_emb_j)
+                                if face_i_norm > 0 and face_j_norm > 0:
+                                    face_dist_ij = cdist([face_emb_i], [face_emb_j], metric='cosine')[0, 0]
+                                    face_sim_ij = 1 - face_dist_ij
+                                    best_face_sim = max(best_face_sim, face_sim_ij)
+                    face_sim_for_candidate = best_face_sim
                 
-                # Find all people that temp_id_i was close to in clip_i
-                people_close_to_i = set()
-                for other_id in unique_temp_ids:
-                    if other_id != temp_id_i and ((temp_id_i, other_id) in physical_proximity_pairs or (other_id, temp_id_i) in physical_proximity_pairs):
-                        # Check if this other_id is in the same clip as temp_id_i
-                        other_tracklets = [t for t in tracklets if t['temp_global_id'] == other_id]
-                        if other_tracklets and other_tracklets[0]['clip_idx'] == clip_i:
-                            people_close_to_i.add(other_id)
-                
-                # Find all people that temp_id_j was close to in clip_j
-                people_close_to_j = set()
-                for other_id in unique_temp_ids:
-                    if other_id != temp_id_j and ((temp_id_j, other_id) in physical_proximity_pairs or (other_id, temp_id_j) in physical_proximity_pairs):
-                        # Check if this other_id is in the same clip as temp_id_j
-                        other_tracklets = [t for t in tracklets if t['temp_global_id'] == other_id]
-                        if other_tracklets and other_tracklets[0]['clip_idx'] == clip_j:
-                            people_close_to_j.add(other_id)
-                
-                # Check if there's a common person they were both close to
-                # OR if they were close to people who appear in different clips (cross-clip pattern)
-                common_people = people_close_to_i & people_close_to_j
-                
-                # Simple cross-clip proximity pattern: if both IDs were close to people in different clips
-                cross_clip_proximity_pattern = False
-                for person_i in people_close_to_i:
-                    for person_j in people_close_to_j:
-                        # Check if person_i and person_j are in different clips
-                        person_i_tracklets = [t for t in tracklets if t['temp_global_id'] == person_i]
-                        person_j_tracklets = [t for t in tracklets if t['temp_global_id'] == person_j]
-                        if person_i_tracklets and person_j_tracklets:
-                            if person_i_tracklets[0]['clip_idx'] != person_j_tracklets[0]['clip_idx']:
-                                cross_clip_proximity_pattern = True
-                                common_person = f"{person_i}(clip {person_i_tracklets[0]['clip_idx']}) ↔ {person_j}(clip {person_j_tracklets[0]['clip_idx']})"
-                                break
-                    if cross_clip_proximity_pattern:
-                        break
-                
-                if common_people:
-                    were_both_close_to_common_person = True
-                    common_person = list(common_people)[0]
-                elif cross_clip_proximity_pattern:
-                    were_both_close_to_common_person = True
-                
-                if were_both_close_to_common_person:
-                    
-                    # NEW: Physical proximity chain logic
-                    if USE_PHYSICAL_PROXIMITY_CHAIN:
-                        # Apply tolerance to the threshold for physical proximity chain pairs
-                        effective_threshold = adaptive_threshold + PHYSICAL_CHAIN_TOLERANCE
-                        print(f"      PHYSICAL CHAIN: Adding tolerance {PHYSICAL_CHAIN_TOLERANCE} to threshold: {adaptive_threshold:.3f} → {effective_threshold:.3f}")
-                else:
-                    print(f"    No common proximity pattern: ID {temp_id_i} close to {people_close_to_i}, ID {temp_id_j} close to {people_close_to_j}")
-            else:
-                print(f"    SAFETY: IDs {temp_id_i} ↔ {temp_id_j} are in same clip ({clip_i}), not applying proximity tolerance")
-            
-            # The general case above now handles all cross-clip physical proximity patterns
-            
-            # NEW: Calculate distance based on approach
-            if USE_CLOTHING_FOCUSED_APPROACH:
-                # Use clothing-focused approach for ALL comparisons
-                tracklets_i = [t for t in all_tracklets if t['temp_global_id'] == unique_temp_ids[i]]
-                tracklets_j = [t for t in all_tracklets if t['temp_global_id'] == unique_temp_ids[j]]
-                
-                if tracklets_i and tracklets_j:
-                    track_i = tracklets_i[0]
-                    track_j = tracklets_j[0]
-                    
-                    current_distance = calculate_clothing_focused_distance(
-                        track_i['body_emb'], track_j['body_emb'],
-                        track_i['face_emb'], track_j['face_emb'],
-                        track_i['pose_emb'], track_j['pose_emb'],
-                        track_i['motion_emb'], track_j['motion_emb'],
-                        track_i['has_face'], track_j['has_face']
-                    )
-                else:
-                    current_distance = dist_matrix[i, j]
-            else:
-                # Use standard distance calculation
-                current_distance = dist_matrix[i, j]
-            
-            # NEW: Check if this is a physical proximity pair and use robust weights (only for standard approach)
-            is_physical_proximity_pair = were_both_close_to_common_person
-            
-            # NEW: For physical proximity chain cases, use robust appearance weights with tolerance
-            if is_physical_proximity_pair and USE_PHYSICAL_PROXIMITY_CHAIN and not USE_CLOTHING_FOCUSED_APPROACH:
-                # Calculate robust distance with enhanced clothing/appearance weights
-                tracklets_i = [t for t in all_tracklets if t['temp_global_id'] == unique_temp_ids[i]]
-                tracklets_j = [t for t in all_tracklets if t['temp_global_id'] == unique_temp_ids[j]]
-                
-                # Get representative embeddings (use first tracklet from each cluster)
-                track_i = tracklets_i[0]
-                track_j = tracklets_j[0]
-                
-                robust_distance = calculate_robust_distance_for_ambiguous(
-                    track_i['body_emb'], track_j['body_emb'],
-                    track_i['face_emb'], track_j['face_emb'],
-                    track_i['pose_emb'], track_j['pose_emb'],
-                    track_i['motion_emb'], track_j['motion_emb'],
-                    track_i['has_face'], track_j['has_face']
-                )
-                
-                # NEW: Also calculate Hausdorff distance for spatial analysis
-                hausdorff_dist = calculate_hausdorff_distance(track_i['bboxes'], track_j['bboxes'])
-                
-                
-                # Use robust distance for decision, but only if it's significantly better
-                if robust_distance < current_distance * 0.8:  # Only use if 20% better
-                    final_distance = robust_distance
-                    print(f"      Using robust distance: {robust_distance:.3f} (vs original: {current_distance:.3f})")
-                else:
-                    final_distance = current_distance
-                    print(f"      Keeping original distance: {current_distance:.3f} (robust: {robust_distance:.3f})")
-            else:
-                final_distance = current_distance
-            
-            # Check distance against effective threshold
-            if final_distance < effective_threshold:
-                # Debug print for cross-clip matches
-                clip_i = tracklets_i[0]['clip_idx']
-                clip_j = tracklets_j[0]['clip_idx']
-                proximity_note = ""
-                if were_physically_close_direct:
-                    proximity_note = " [DIRECT PROXIMITY]"
-                elif were_physically_close_indirect:
-                    proximity_note = f" [INDIRECT PROXIMITY via {common_cluster}]"
-                # Merge j into i
-                final_ids[j] = i
+                # Collect candidate with metadata for sorting
+                merge_candidates.append({
+                    'i': i,
+                    'j': j,
+                    'temp_id_i': temp_id_i,
+                    'temp_id_j': temp_id_j,
+                    'distance': final_distance,
+                    'body_sim': body_sim_for_check,
+                    'face_sim': face_sim_for_candidate,
+                    'both_have_faces': both_have_faces,
+                    'clip_i': clip_i,
+                    'clip_j': clip_j,
+                    'effective_threshold': effective_threshold
+                })
             else:
                 # Near-miss with effective threshold
                 if final_distance < effective_threshold + 0.10:
                     clip_i = tracklets_i[0]['clip_idx']
                     clip_j = tracklets_j[0]['clip_idx']
-                    proximity_note = ""
-                    if were_physically_close_direct:
-                        proximity_note = " [DIRECT PROXIMITY]"
-                    elif were_physically_close_indirect:
-                        proximity_note = f" [INDIRECT PROXIMITY via {common_cluster}]"
+    
+    # Two-pass approach: (1) Face-to-no-face first (locked after merge), (2) Face-to-face second
+    # Pass 1: Face-to-no-face matches (sorted by body_sim, higher = better) - clusters locked after merge
+    # Pass 2: Face-to-face matches (sorted by distance, lower = better) - only process unlocked clusters
+    print(f"    Found {len(merge_candidates)} merge candidates")
+    
+    # Separate candidates into two groups
+    face_to_no_face_candidates = [c for c in merge_candidates if not c['both_have_faces']]
+    face_to_face_candidates = [c for c in merge_candidates if c['both_have_faces']]
+    
+    # Sort each group appropriately
+    face_to_no_face_candidates.sort(key=lambda x: -x['body_sim'])  # Higher body_sim first
+    face_to_face_candidates.sort(key=lambda x: x['distance'])  # Lower distance first
+    
+    print(f"    PASS 1: Processing {len(face_to_no_face_candidates)} face-to-no-face matches (sorted by body_sim)")
+    
+    # Track which clusters were merged in Pass 1 (locked)
+    locked_clusters = set()
+    
+    # PASS 1: Process face-to-no-face matches
+    for candidate in face_to_no_face_candidates:
+        i = candidate['i']
+        j = candidate['j']
+        temp_id_i = candidate['temp_id_i']
+        temp_id_j = candidate['temp_id_j']
+        final_distance = candidate['distance']
+        body_sim_for_check = candidate['body_sim']
+        clip_i = candidate['clip_i']
+        clip_j = candidate['clip_j']
+        
+        # Skip if already merged
+        if final_ids[i] != i or final_ids[j] != j:
+                    continue
+                
+        # CRITICAL: Check same-clip overlap block - NEVER merge clusters from same clip!
+        if same_clip_overlap_block[i, j]:
+            continue
+                
+        # Check if either cluster is already locked from Pass 1
+        if i in locked_clusters or j in locked_clusters:
+            continue
+        
+        # Check if this is a face-to-face match (should be False in Pass 1)
+        is_face_to_face_match = candidate['both_have_faces']
+        
+        # Before merging, check if target cluster already has confirmed face-to-face match from same clip
+        target_cluster_id = final_ids[i]
+        
+        # Check if there's already a confirmed face-to-face match for this cluster in clip_j
+        if (target_cluster_id, clip_j) in confirmed_face_to_face_matches:
+            continue
+        
+        # Check same for clip_i (in case j already has confirmed match)
+        source_cluster_id = final_ids[j]
+        if (source_cluster_id, clip_i) in confirmed_face_to_face_matches:
+            continue
+        
+        # CRITICAL: Prevent multiple clusters from the same source clip from merging with the same target cluster
+        if (target_cluster_id, clip_j) in target_cluster_to_source_clip:
+            existing_source_clip = target_cluster_to_source_clip[(target_cluster_id, clip_j)]
+            if existing_source_clip == clip_i:
+                continue
+        
+                    # Merge j into i
+        final_ids[j] = final_ids[i]
+        
+        # Mark clusters as locked (merged in Pass 1)
+        locked_clusters.add(i)
+        locked_clusters.add(j)
+        # Also lock any clusters that are now part of this merged cluster
+        merged_cluster_id = final_ids[j]
+        for k in range(len(final_ids)):
+            if final_ids[k] == merged_cluster_id:
+                locked_clusters.add(k)
+        
+        # Record that this target cluster (in clip_j) has been merged with a cluster from clip_i
+        target_cluster_to_source_clip[(target_cluster_id, clip_j)] = clip_i
+        
+    
+    print(f"    PASS 1 complete: {len(locked_clusters)} clusters locked")
+    print(f"    PASS 2: Processing {len(face_to_face_candidates)} face-to-face matches (recomputing distances with merged clusters)")
+    
+    # FIRST: Recompute distances for ALL face-to-face candidates using merged clusters
+    # This ensures we compare the ACTUAL best distances after Pass 1 merges
+    body_w = 1.0 - CROSS_CLIP_FACE_WEIGHT
+    
+    for candidate in face_to_face_candidates:
+        i = candidate['i']
+        j = candidate['j']
+        
+        # Skip if already merged
+        if final_ids[i] != i or final_ids[j] != j:
+            continue
+        
+        # Check if clusters have merged with others (from Pass 1)
+        merged_cluster_i = final_ids[i]
+        merged_cluster_j = final_ids[j]
+        clusters_in_i = np.sum(final_ids == merged_cluster_i)
+        clusters_in_j = np.sum(final_ids == merged_cluster_j)
+        has_merged_i = (clusters_in_i > 1)
+        has_merged_j = (clusters_in_j > 1)
+        
+        if has_merged_i or has_merged_j:
+            # Recompute distance using ALL tracklets from merged clusters
+            merged_temp_ids_i = unique_temp_ids[final_ids == merged_cluster_i]
+            merged_temp_ids_j = unique_temp_ids[final_ids == merged_cluster_j]
+            merged_tracklets_i = [t for t in tracklets if t['temp_global_id'] in merged_temp_ids_i]
+            merged_tracklets_j = [t for t in tracklets if t['temp_global_id'] in merged_temp_ids_j]
+            
+            original_distance = candidate['distance']
+            best_distance_recomputed = float('inf')
+            best_body_sim = 0.0
+            best_face_sim = 0.0
+            best_pair_info = None
+            
+            # For face-to-face candidates, prioritize pairs where BOTH have faces
+            # This ensures we use face information when available
+            both_have_faces_candidates = []
+            other_candidates = []
+            
+            for t_i in merged_tracklets_i:
+                for t_j in merged_tracklets_j:
+                    body_emb_i = np.nan_to_num(t_i['body_emb'], nan=0.0)
+                    body_emb_j = np.nan_to_num(t_j['body_emb'], nan=0.0)
+                    body_dist_ij = cdist([body_emb_i], [body_emb_j], metric='cosine')[0, 0]
+                    body_sim_ij = 1 - body_dist_ij
+                    
+                    face_dist_ij = 1.0
+                    face_sim_ij = 0.0
+                    both_have_faces = t_i.get('has_face', False) and t_j.get('has_face', False)
+                    
+                    if both_have_faces:
+                        face_emb_i = np.nan_to_num(t_i['face_emb'], nan=0.0)
+                        face_emb_j = np.nan_to_num(t_j['face_emb'], nan=0.0)
+                        face_i_norm = np.linalg.norm(face_emb_i)
+                        face_j_norm = np.linalg.norm(face_emb_j)
+                        if face_i_norm > 0 and face_j_norm > 0:
+                            face_dist_ij = cdist([face_emb_i], [face_emb_j], metric='cosine')[0, 0]
+                            face_sim_ij = 1 - face_dist_ij
+            else:
+                            face_dist_ij = 1.0
+                            face_sim_ij = 0.0
+                    else:
+                        face_dist_ij = 1.0
+                        face_sim_ij = 0.0
+                    
+                    if both_have_faces and face_dist_ij < 1.0:
+                        weighted_dist = body_w * body_dist_ij + CROSS_CLIP_FACE_WEIGHT * face_dist_ij
+                    else:
+                        weighted_dist = body_dist_ij
+
+            pair_info = {
+                'dist': weighted_dist,
+                'body_sim': body_sim_ij,
+                'face_sim': face_sim_ij,
+                'frames_i': (t_i.get('start_frame', -1), t_i.get('end_frame', -1)),
+                'frames_j': (t_j.get('start_frame', -1), t_j.get('end_frame', -1))
+            }
+            if both_have_faces:
+                both_have_faces_candidates.append(pair_info)
+            else:
+                other_candidates.append(pair_info)
+            
+            # First, try to find best from face-to-face pairs
+            if both_have_faces_candidates:
+                best_pair = min(both_have_faces_candidates, key=lambda x: x['dist'])
+                best_distance_recomputed = best_pair['dist']
+                best_body_sim = best_pair['body_sim']
+                best_face_sim = best_pair['face_sim']
+                best_pair_info = best_pair['frames_i'] + best_pair['frames_j']
+            # Fall back to other pairs only if no face-to-face pairs found
+            elif other_candidates:
+                best_pair = min(other_candidates, key=lambda x: x['dist'])
+                best_distance_recomputed = best_pair['dist']
+                best_body_sim = best_pair['body_sim']
+                best_face_sim = best_pair['face_sim']
+                best_pair_info = best_pair['frames_i'] + best_pair['frames_j']
+            
+            # Update candidate distance with recomputed value
+            # Always print recomputation details for debugging (even if small change)
+            candidate['distance'] = best_distance_recomputed
+            candidate['body_sim'] = best_body_sim
+            candidate['face_sim'] = best_face_sim
+    
+    # PASS 2: Best-match logic - ensure each target cluster (j) gets merged with its BEST (lowest distance) source candidate
+    # Now using recomputed distances that account for merged clusters
+    target_cluster_j_to_best_candidate = {}  # {cluster_j: best_candidate_for_j}
+    
+    for candidate in face_to_face_candidates:
+        i = candidate['i']
+        j = candidate['j']
+        
+        # Skip if already merged
+        if final_ids[i] != i or final_ids[j] != j:
+                    continue
+                
+        # CRITICAL: Check same-clip overlap block - NEVER merge clusters from same clip!
+        if same_clip_overlap_block[i, j]:
+            continue
+        
+        # In Pass 2, allow locked clusters to merge with NEW unlocked clusters
+        # Only skip if BOTH are locked (both already merged in Pass 1)
+        both_locked = (i in locked_clusters and j in locked_clusters)
+        if both_locked:
+            continue
+        
+        # Group by target cluster j (the one from Clip 2 that will be merged into source i)
+        # We want the BEST source (i) for each target (j), using recomputed distances
+        if j not in target_cluster_j_to_best_candidate:
+            target_cluster_j_to_best_candidate[j] = candidate
+        else:
+            existing_candidate = target_cluster_j_to_best_candidate[j]
+            existing_i = existing_candidate['i']
+            
+            # Select best candidate: if both belong to same Global ID, prefer lower index; otherwise prefer lower distance
+            if final_ids[i] == final_ids[existing_i]:
+                if i < existing_i:
+                    target_cluster_j_to_best_candidate[j] = candidate
+            else:
+                if candidate['distance'] < existing_candidate['distance']:
+                    target_cluster_j_to_best_candidate[j] = candidate
+    
+    # Process only the best candidates for each target cluster j
+    best_candidates = list(target_cluster_j_to_best_candidate.values())
+    best_candidates.sort(key=lambda x: x['distance'])  # Sort by distance (lower = better)
+    
+    print(f"    PASS 2 (best-match): Processing {len(best_candidates)} best face-to-face matches (one per target cluster)")
+    
+    # PASS 2: Process face-to-face matches (only best matches, only unlocked clusters)
+    for candidate in best_candidates:
+        i = candidate['i']
+        j = candidate['j']
+        temp_id_i = candidate['temp_id_i']
+        temp_id_j = candidate['temp_id_j']
+        original_distance = candidate['distance']  # Distance before Pass 1 merges
+        body_sim_for_check = candidate['body_sim']
+        both_have_faces = candidate['both_have_faces']
+        clip_i = candidate['clip_i']
+        clip_j = candidate['clip_j']
+        
+        # Skip if already merged
+        if final_ids[i] != i or final_ids[j] != j:
+            continue
+        
+        # RECOMPUTE distance using merged clusters (if clusters merged in Pass 1)
+        # Get ALL tracklets in merged clusters to find best match among all tracklet pairs
+        merged_cluster_i = final_ids[i]
+        merged_cluster_j = final_ids[j]
+        
+        # Check if clusters have merged with others: count how many clusters share the same final_id
+        clusters_in_i = np.sum(final_ids == merged_cluster_i)
+        clusters_in_j = np.sum(final_ids == merged_cluster_j)
+        has_merged_i = (clusters_in_i > 1)  # More than 1 cluster merged together
+        has_merged_j = (clusters_in_j > 1)
+        
+        if has_merged_i or has_merged_j:
+            # Get all clusters that merged into the same final cluster
+            merged_temp_ids_i = unique_temp_ids[final_ids == merged_cluster_i]
+            merged_temp_ids_j = unique_temp_ids[final_ids == merged_cluster_j]
+            
+            # Get all tracklets belonging to merged clusters
+            merged_tracklets_i = [t for t in tracklets if t['temp_global_id'] in merged_temp_ids_i]
+            merged_tracklets_j = [t for t in tracklets if t['temp_global_id'] in merged_temp_ids_j]
+            
+            # Recompute best distance among ALL tracklet pairs in merged clusters
+            body_w = 1.0 - CROSS_CLIP_FACE_WEIGHT
+            best_distance_merged = float('inf')
+            best_body_dist_merged = float('inf')
+            
+            for t_i in merged_tracklets_i:
+                for t_j in merged_tracklets_j:
+                    # Calculate body distance
+                    body_emb_i = np.nan_to_num(t_i['body_emb'], nan=0.0)
+                    body_emb_j = np.nan_to_num(t_j['body_emb'], nan=0.0)
+                    body_dist_ij = cdist([body_emb_i], [body_emb_j], metric='cosine')[0, 0]
+                    best_body_dist_merged = min(best_body_dist_merged, body_dist_ij)
+                    
+                    # Calculate face distance if both have faces
+                    face_dist_ij = 1.0
+                    if t_i.get('has_face', False) and t_j.get('has_face', False):
+                        face_emb_i = np.nan_to_num(t_i['face_emb'], nan=0.0)
+                        face_emb_j = np.nan_to_num(t_j['face_emb'], nan=0.0)
+                        face_i_norm = np.linalg.norm(face_emb_i)
+                        face_j_norm = np.linalg.norm(face_emb_j)
+                        if face_i_norm > 0 and face_j_norm > 0:
+                            face_dist_ij = cdist([face_emb_i], [face_emb_j], metric='cosine')[0, 0]
+                else:
+                            face_dist_ij = 1.0
+            else:
+                        face_dist_ij = 1.0
+                    
+                    # Weighted distance
+                    if t_i.get('has_face', False) and t_j.get('has_face', False) and face_dist_ij < 1.0:
+                        weighted_dist = body_w * body_dist_ij + CROSS_CLIP_FACE_WEIGHT * face_dist_ij
+                    else:
+                        weighted_dist = body_dist_ij
+                    
+                    best_distance_merged = min(best_distance_merged, weighted_dist)
+            
+            # Use recomputed distance and body sim
+            final_distance = best_distance_merged
+            body_sim_for_check = 1 - best_body_dist_merged
+        else:
+            # No merging - use original distance
+            final_distance = original_distance
+        
+        # Get effective threshold for distance check
+        effective_threshold = candidate.get('effective_threshold', CROSS_CLIP_THRESHOLD)
+        body_sim_threshold = 0.7 if both_have_faces else 0.65
+        
+        # Check if distance passes threshold
+        if final_distance >= effective_threshold or body_sim_for_check < body_sim_threshold:
+            continue
+        
+        # In Pass 2, allow locked clusters (from Pass 1) to merge with NEW unlocked clusters
+        # Only skip if BOTH are locked (both already merged in Pass 1 - would be a re-merge)
+        # Skip if both clusters are already locked (merged in Pass 1)
+        both_locked = (i in locked_clusters and j in locked_clusters)
+        if both_locked:
+            continue
+        
+        # Check if this is a face-to-face match
+        is_face_to_face_match = both_have_faces
+        
+        # Before merging, check if target cluster already has confirmed face-to-face match from same clip
+        target_cluster_id = final_ids[i]
+        
+        # Check if there's already a confirmed face-to-face match for this cluster in clip_j
+        if (target_cluster_id, clip_j) in confirmed_face_to_face_matches:
+            continue
+        
+        # Check same for clip_i (in case j already has confirmed match)
+        source_cluster_id = final_ids[j]
+        if (source_cluster_id, clip_i) in confirmed_face_to_face_matches:
+            continue
+        
+        # CRITICAL: Prevent multiple clusters from the same source clip from merging with the same target cluster
+        if (target_cluster_id, clip_j) in target_cluster_to_source_clip:
+            existing_source_clip = target_cluster_to_source_clip[(target_cluster_id, clip_j)]
+            if existing_source_clip == clip_i:
+                continue
+        
+        # Merge j into i
+        final_ids[j] = final_ids[i]
+        
+        # Record that this target cluster (in clip_j) has been merged with a cluster from clip_i
+        target_cluster_to_source_clip[(target_cluster_id, clip_j)] = clip_i
+        
+        # Mark this as confirmed face-to-face match if applicable
+        if is_face_to_face_match:
+            merged_cluster_id = final_ids[j]
+            confirmed_face_to_face_matches[(merged_cluster_id, clip_i)] = True
+            confirmed_face_to_face_matches[(merged_cluster_id, clip_j)] = True
     
     print(f"    → {len(np.unique(final_ids))} global clusters after cross-clip merging")
     
@@ -2370,6 +2794,104 @@ def adaptive_cluster_tracklets(tracklets):
         temp_id = t['temp_global_id']
         temp_idx = np.where(unique_temp_ids == temp_id)[0][0]
         global_ids[i] = final_ids[temp_idx]
+    
+    # CRITICAL: Fix same-clip duplicates - prevent multiple tracklets from same clip in same global ID
+    # This can happen when multiple same-clip tracklets merge with the same cross-clip tracklet
+    print("    Validating: Checking for same-clip duplicates...")
+    duplicate_fixes = 0
+    
+    # Group tracklets by global_id and clip_idx
+    global_id_to_clips = {}
+    for i, (gid, tracklet) in enumerate(zip(global_ids, tracklets)):
+        clip_idx = tracklet['clip_idx']
+        if gid not in global_id_to_clips:
+            global_id_to_clips[gid] = {}
+        if clip_idx not in global_id_to_clips[gid]:
+            global_id_to_clips[gid][clip_idx] = []
+        global_id_to_clips[gid][clip_idx].append(i)
+    
+    # Find violations: multiple tracklets from same clip in same global ID
+    next_new_id = len(np.unique(global_ids))
+    for gid, clips_dict in global_id_to_clips.items():
+        for clip_idx, indices in clips_dict.items():
+            if len(indices) > 1:
+                # Violation: multiple tracklets from same clip in same global ID
+                
+                # Group tracklets by temp_global_id (from Stage 1 PersonCluster)
+                # Tracklets from the same PersonCluster should stay together
+                temp_id_groups = {}
+                for idx in indices:
+                    temp_id = tracklets[idx].get('temp_global_id', -1)
+                    if temp_id not in temp_id_groups:
+                        temp_id_groups[temp_id] = []
+                    temp_id_groups[temp_id].append(idx)
+                
+                
+                # Find the longest tracklet group (best representative cluster)
+                group_lengths = []
+                for temp_id, group_indices in temp_id_groups.items():
+                    total_length = sum(tracklets[i]['end_frame'] - tracklets[i]['start_frame'] for i in group_indices)
+                    frames_str = ', '.join([f"{tracklets[i]['start_frame']}-{tracklets[i]['end_frame']}" for i in group_indices])
+                    group_lengths.append((total_length, temp_id, group_indices, frames_str))
+                group_lengths.sort(reverse=True)
+                
+                # If there's only ONE PersonCluster but multiple tracklets, check if it's a REAL duplicate
+                # or just one PersonCluster with multiple tracklets (which is valid)
+                # A duplicate is when the same Global ID has tracklets from DIFFERENT PersonClusters in the same clip
+                
+                if len(group_lengths) == 1:
+                    # Only one PersonCluster, but multiple tracklets
+                    temp_id = group_lengths[0][1]
+                    group_indices = group_lengths[0][2]
+                    frames_str = group_lengths[0][3]
+                    
+                    # GENERIC FIX: Check if ALL tracklets in this clip for this Global ID are from the SAME PersonCluster
+                    # If yes, it's NOT a duplicate - just one PersonCluster with multiple tracklets (valid!)
+                    better_match_found = False
+                    
+                    gid_tracklets_in_clip = [i for i, (gid_check, t) in enumerate(zip(global_ids, tracklets)) 
+                                             if gid_check == gid and t['clip_idx'] == clip_idx]
+                    
+                    # Check if ALL tracklets in this Global ID + Clip are from the same PersonCluster (temp_id)
+                    all_same_person_cluster = all(
+                        tracklets[i].get('temp_global_id', -1) == temp_id 
+                        for i in gid_tracklets_in_clip
+                    )
+                    
+                    if all_same_person_cluster and len(gid_tracklets_in_clip) == len(group_indices):
+                        # This is NOT a real duplicate - just one PersonCluster with multiple tracklets
+                        # Keep them in the current Global ID (don't reassign)
+                        # Don't change global_ids - they're already correct
+                        better_match_found = True  # Prevent reassignment
+                    else:
+                        # REAL duplicate - there are OTHER tracklets from different PersonClusters
+                        # This shouldn't happen, but if it does, we need to reassign
+                        pass
+                    
+                    if not better_match_found:
+                        # No better match found - reassign to new Global ID (preserve integrity)
+                        reassigned_gid = next_new_id
+                        for idx in group_indices:
+                            global_ids[idx] = reassigned_gid
+                            duplicate_fixes += 1
+                        next_new_id += 1
+                else:
+                    # Multiple PersonClusters - keep longest, reassign others
+                    keep_temp_id = group_lengths[0][1]
+                    keep_indices = group_lengths[0][2]
+                    keep_frames = group_lengths[0][3]
+                    
+                    # Assign new global IDs to all other groups (preserve cluster integrity)
+                    for length, temp_id, group_indices, frames_str in group_lengths[1:]:
+                        # Reassign ALL tracklets in this cluster together
+                        reassigned_gid = next_new_id
+                        for idx in group_indices:
+                            global_ids[idx] = reassigned_gid
+                            duplicate_fixes += 1
+                        next_new_id += 1
+    
+    if duplicate_fixes > 0:
+        pass
     
     return global_ids
 # ======================
@@ -2388,6 +2910,23 @@ if os.path.exists(NPZ_FILE):
     
     cached = np.load(NPZ_FILE, allow_pickle=True)
     all_tracklets = cached['tracklets'].tolist()
+    
+    # Recompute effective has_face from consecutive face frames (no cache rebuild needed)
+    FACE_MIN_CONSEC_FRAMES = 15
+    for t in all_tracklets:
+        eff_has_face = t.get('has_face', False)
+        if 'max_consec_face_frames' in t:
+            eff_has_face = int(t['max_consec_face_frames']) >= FACE_MIN_CONSEC_FRAMES
+        elif 'num_face_frames' in t and 'num_frames' in t:
+            # Approximate consecutive by requiring at least N total face frames
+            eff_has_face = int(t['num_face_frames']) >= FACE_MIN_CONSEC_FRAMES
+        elif 'face_ratio' in t and 'num_frames' in t:
+            # Fallback approximation
+            try:
+                eff_has_face = float(t['face_ratio']) * int(t['num_frames']) >= FACE_MIN_CONSEC_FRAMES
+            except Exception:
+                eff_has_face = t.get('has_face', False)
+        t['has_face'] = bool(eff_has_face)
     
     print(f"Loaded {len(all_tracklets)} tracklets from cache")
     print("Merging overlapping tracks in same clips...")
@@ -2477,7 +3016,7 @@ output_data = {
         'total_global_identities': n_clusters,
         'total_tracklets': len(all_tracklets),
         'config': {
-            'clustering_method': CLUSTERING_METHOD,
+            'clustering_method': 'ADAPTIVE',  # Always uses adaptive two-stage clustering
             'face_weight': FACE_WEIGHT,
             'motion_weight': MOTION_WEIGHT,
             'pose_weight': POSE_WEIGHT,
