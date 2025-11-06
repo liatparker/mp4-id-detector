@@ -36,96 +36,81 @@ This system provides two complementary capabilities:
 
 #### **Core Algorithm: Two-Stage Adaptive Clustering**
 
+The system uses a sophisticated two-stage approach that first separates different people within the same video clip (strict), then matches the same person across different clips (lenient).
+
 ##### **Stage 1: Within-Clip Clustering (Strict Separation)**
-- **Purpose**: Ensures different people in the same scene are kept separate
-- **Face Weight**: 40% (high weight since faces are reliable within same lighting/angle)
-- **Body Weight**: 60%
-- **Base Threshold**: 0.15 (used when automatic per-clip analysis is disabled)
-- **Temporal Overlap Analysis**: 
-  - **Hard block**: Overlap > 50% (different people appearing simultaneously) - cluster is skipped
-  - **Adaptive similarity thresholds** based on overlap ratio:
-    - **Overlap > 40%**: Required body similarity = `0.80` (very strict)
-      - No face: Minimum `0.80`
-      - Face-to-face: `max(0.80, 0.82)` (stricter)
-      - Containment bonus: `+0.05`
-      - Duration ratio ≥ 2.0: `+0.03`
-    - **Overlap > 10%**: Required body similarity = `0.70` (lenient)
-      - No face: Minimum `0.87` (very strict)
-      - Face-to-face: `max(0.70, 0.82)` (stricter)
-      - Containment bonus: `+0.05`
-      - Duration ratio ≥ 2.0: `+0.03`
-    - **Overlap ≤ 10%**: Required body similarity = `0.70` (very lenient)
-      - No face or duration ratio ≥ 2.0: `max(0.70, 0.87)` or `0.80`
-      - Face-to-face: `max(0.70, 0.83)` (stricter for back-view cases like Clip 2)
-  - All thresholds have minimum floor of `0.65`
-- **Cohesion Check**: Tracklet must meet threshold against ALL cluster members (not just average)
-- **Adaptive Thresholds**: When `USE_PER_CLIP_THRESHOLDS = True`, automatically adjusts based on:
-  - Number of people in clip (crowding analysis)
-  - Face visibility (face detection rate)
-  - Lighting/angle conditions (diversity analysis)
-  - Tracking quality (tracking stability)
-- **Per-Clip Analysis**: Each clip gets an automatically calculated threshold based on its characteristics, or manual override via `PER_CLIP_THRESHOLDS` dictionary
+
+**Why Strict?** When people appear in the same video clip, they are likely different people. We need to be very careful not to merge them incorrectly.
+
+**How it works:**
+- **Face + Body Features**: Combines face recognition (40% weight) and body appearance (60% weight). Faces are reliable within the same lighting/angle conditions.
+- **Temporal Overlap Analysis**: If two people appear simultaneously (high temporal overlap), they are almost certainly different people. The system blocks merging when overlap exceeds 50%.
+- **Adaptive Similarity Requirements**: The required similarity between two tracklets depends on:
+  - **Temporal overlap**: Higher overlap requires higher similarity (more strict)
+  - **Face availability**: When faces are detected, slightly stricter requirements apply
+  - **Containment**: If one tracklet is fully contained within another, requirements are slightly stricter
+  - **Duration ratio**: Very different tracklet lengths get stricter requirements
+- **Cohesion Check**: A tracklet must be similar to ALL members of a cluster, not just the average. This prevents weak matches from being accepted.
+- **Per-Clip Adaptation**: Each clip gets automatic threshold adjustment based on:
+  - Number of people (crowding analysis)
+  - Face visibility rate
+  - Lighting/angle diversity
+  - Tracking quality and stability
 
 ##### **Stage 2: Cross-Clip Merging (Lenient Matching)**
-- **Purpose**: Matches the same person across different scenes using image-only embeddings (body + face)
-- **Face Weight**: 45% (slightly higher than within-clip 0.4 for cross-camera matching)
-- **Body Weight**: 55%
-- **Base Threshold**: 0.46 (used as baseline for adaptive adjustments)
-- **Two-Pass Merging System**:
+
+**Why Lenient?** When matching across different clips, the same person may look different due to lighting, angle, or camera conditions. We need to be more flexible.
+
+**How it works:**
+- **Two-Pass Merging System**: Processes matches in two passes to handle different scenarios:
   1. **Pass 1: Face-to-No-Face Matches**
-     - Processes pairs where one or both clusters lack faces
-     - Sorted by **body similarity** (higher = better, processed first)
-     - Threshold adjustment: `-0.08` when one has face but not both (makes merging easier)
-     - Body similarity requirement: `0.65` (lowered for face/no-face pairs)
-     - **Locking**: Clusters merged in Pass 1 are locked to prevent conflicts
-     - All clusters in a merged group are locked together
+     - Handles cases where one or both clusters lack face information
+     - Prioritizes body similarity (higher similarity processed first)
+     - Uses more lenient thresholds since face information is missing
+     - Locks merged clusters to prevent conflicts in Pass 2
   2. **Pass 2: Face-to-Face Matches**
-     - Processes pairs where both clusters have faces
-     - **Distance Recalculation**: Distances are recomputed using ALL tracklets from merged clusters (if Pass 1 merged clusters)
-     - Uses **best-of-cluster matching**: Finds minimum distance among all tracklet pairs in merged clusters
-     - Sorted by **distance** (lower = better)
-     - Body similarity requirement: `0.7` (stricter for face-to-face pairs)
-     - **Best-Match Logic**: Each target cluster is matched with its BEST (lowest distance) source candidate
-     - Only processes unlocked clusters (or allows locked clusters to merge with NEW unlocked clusters)
-     - Skips if both clusters are locked (prevents re-merging)
-- **Best-of-Cluster Matching**: Compares minimum distance among all tracklet pairs to prevent single bad tracklet from dominating
-- **Cluster Representation**: Uses length-weighted averaging of tracklet embeddings (longer tracklets contribute more)
-- **Adaptive Thresholds**: Based on:
-  - **Tracklet length**: 
-    - High confidence (longer >500 frames): `base - 0.02 = 0.44` (more lenient)
-    - Medium confidence (300-500 frames): `base = 0.46`
-    - Medium+ confidence (250-300 frames): `base + 0.03 = 0.49`
-    - Low confidence (shorter <250 frames): `base + 0.05 = 0.51` (very lenient)
-  - **Face availability**: 
-    - Face-to-no-face: Threshold reduced by `0.08` (easier to merge)
-    - Face-to-face: Uses stricter thresholds
-  - **Same-clip blocking**: Prevents merging clusters from the same clip (hard constraint)
-  - **Transitive blocking**: Prevents indirect merging of blocked clusters (can be overridden by Hausdorff distance <50 pixels)
+     - Processes pairs where both clusters have face information
+     - Recalculates distances using all tracklets from merged clusters (if Pass 1 merged any)
+     - Uses stricter requirements since face information is available
+     - Implements best-match logic: each target cluster gets matched with its best source candidate
+     - Only processes unlocked clusters to avoid conflicts
+- **Best-of-Cluster Matching**: Instead of comparing average cluster embeddings, the system finds the minimum distance among all tracklet pairs. This prevents a single bad tracklet from dominating the comparison.
+- **Length-Weighted Averaging**: Longer tracklets (more frames) contribute more to cluster embeddings, as they contain more reliable information.
+- **Adaptive Thresholds**: Thresholds adjust based on:
+  - **Tracklet length**: Longer tracklets are more reliable and get slightly more lenient thresholds
+  - **Face availability**: Face-to-face pairs use stricter thresholds than face-to-no-face pairs
+  - **Same-clip blocking**: Never merges clusters from the same clip (hard constraint)
+  - **Transitive blocking**: Prevents indirect merging of incompatible clusters, but can be overridden by strong spatial evidence
 
 #### **Multi-Model Ensemble**
-- **OSNet (IBN-Net)**: 512D body embeddings (weight: 70%)
-- **TransReID (ViT)**: 768D body embeddings (weight: 30%)
-- **Combined Body**: 1280D weighted ensemble (when `USE_ENSEMBLE_REID = True`)
-- **InsightFace**: 512D face embeddings (when face detected)
-- **MediaPipe**: Pose keypoints (66D, enabled when `USE_POSE_FEATURES = True`)
+
+The system combines multiple deep learning models for robust feature extraction:
+
+- **OSNet (IBN-Net)**: Primary body appearance model, 512D embeddings
+- **TransReID (ViT)**: Vision Transformer for body features, 768D embeddings
+- **Ensemble**: When enabled, combines OSNet (70% weight) and TransReID (30% weight) into 1280D embeddings
+- **InsightFace**: Face recognition model, 512D embeddings (when faces detected)
+- **MediaPipe**: Optional pose estimation for additional person characterization
 
 #### **Advanced Features**
-- **Test-Time Augmentation (TTA)**: Horizontal flip for view invariance (`USE_TTA = True`)
-- **Temporal Smoothing**: Smooths embeddings within tracks for stability (`USE_TEMPORAL_SMOOTHING = True`)
-- **k-Reciprocal Re-ranking**: Improves matching accuracy using reciprocal neighbors (`USE_RERANKING = True`, k=25)
-- **Camera Bias Correction**: Accounts for camera-specific variations (`USE_CAMERA_BIAS = True`)
-- **Pose Features**: MediaPipe pose estimation for additional person characterization (`USE_POSE_FEATURES = True`)
-- **Quality-Weighted Embeddings**: Higher weight for frames with faces and good pose detection
-- **Representative Frame Selection**: Chooses diverse high-quality frames for multi-frame matching
-- **Caching System**: NPZ file caching for fast parameter tuning and development
-- **Length-Weighted Averaging**: Longer tracklets contribute more to cluster embeddings
+
+- **Test-Time Augmentation (TTA)**: Horizontal flip to improve robustness across different viewing angles
+- **Temporal Smoothing**: Smooths embeddings within tracks over time for stability
+- **k-Reciprocal Re-ranking**: Improves matching accuracy by considering reciprocal nearest neighbors
+- **Camera Bias Correction**: Accounts for camera-specific variations in appearance
+- **Quality-Weighted Embeddings**: Frames with faces and good pose detection get higher weights
+- **Representative Frame Selection**: Chooses diverse, high-quality frames for multi-frame matching
+- **Caching System**: Stores pre-computed embeddings in NPZ files for fast parameter tuning
 
 #### **2x2 Grid Video Output** 🎬
-- **Combines all 4 annotated clips** into a single synchronized 2x2 grid view
-- **Output file**: `outputs_v3/grid_2x2_annotated.mp4`
-- **Perfect for visualization**: See the same person across different clips simultaneously
-- **Synchronized playback**: All clips play frame-by-frame in perfect sync
-- **Use case**: Ideal for verifying cross-clip person matching and comparing same person across different views
+
+Creates a synchronized 2x2 grid view combining all 4 annotated clips. Perfect for:
+- Verifying cross-clip person matching
+- Comparing the same person across different views
+- Quality assurance and validation
+- Presentations and demonstrations
+
+**Output file**: `outputs_v3/grid_2x2_annotated.mp4`
 
 ---
 
@@ -135,77 +120,54 @@ This system provides two complementary capabilities:
 
 #### **Hybrid Detection Architecture**
 
-Combines multiple models for robust crime detection:
-- **YOLOv8**: Person and object detection (COCO dataset)
-- **Custom Weapon YOLO**: Specialized gun detection model (`weapon_yolov8_gun.pt`)
+The system combines three complementary approaches:
+- **YOLOv8**: Fast object detection for people and objects (COCO dataset)
+- **Custom Weapon YOLO**: Specialized gun detection model (optional, `weapon_yolov8_gun.pt`)
 - **CLIP (OpenAI)**: Zero-shot scene understanding and gun validation
 
 #### **Detection Pipeline**
 
-1. **Frame Preprocessing**
-   - **CLAHE (Contrast Limited Adaptive Histogram Equalization)**: Normalizes lighting across different clips
-   - **Mild Sharpening**: Enhances edges and small objects (like guns)
-   - Critical for detecting guns in varying lighting conditions
+**1. Frame Preprocessing**
+- **CLAHE (Contrast Limited Adaptive Histogram Equalization)**: Normalizes lighting variations across clips, critical for detecting small objects like guns
+- **Mild Sharpening**: Enhances edges and details to improve detection of small weapons
 
-2. **YOLO Object Detection**
-   - Detects people using YOLOv8 COCO (class 0)
-   - Detects weapons using specialized gun model (if available)
-   - **CLIP Validation**: Each YOLO gun detection is validated using CLIP
-     - Asks CLIP: "Is this a gun or a smartphone?"
-     - Filters false positives (iPhones, hands, etc.)
-     - **Strict Validation Logic**:
-       - `gun_prob > phone_prob + 0.25`: Very strong gun evidence (validation_score = 0.9)
-       - `gun_prob > phone_prob + 0.15` AND `gun_confidence > 0.50`: Strong evidence (validation_score = 0.7)
-       - `gun_prob > phone_prob + 0.05` AND `gun_confidence > 0.65`: Marginal but high YOLO confidence (validation_score = 0.6)
-       - Otherwise: Rejected (validation_score = 0.2)
-     - Combined score: `(YOLO_confidence + CLIP_validation_score) / 2`
+**2. YOLO Object Detection**
+- Detects people using standard YOLOv8 COCO model
+- Detects weapons using specialized gun model (if available)
+- **CLIP Validation**: Each YOLO gun detection is validated using CLIP to filter false positives
+  - Asks CLIP: "Is this a gun or a smartphone?"
+  - Uses strict validation logic requiring strong evidence that it's a gun (not a phone)
+  - Combines YOLO confidence with CLIP validation score for robust detection
 
-3. **CLIP Scene Analysis**
-   - Zero-shot classification using predefined crime labels:
-     - **Shoplifting**: "person secretly stealing items and hiding them in pockets or bags", etc.
-     - **Guns**: "person holding a handgun or pistol", "person with a gun or firearm", etc.
-     - **Urgent Reaction**: "person rushing or running suddenly in panic", etc.
-     - **Normal**: "normal shopping in a store with customers browsing", etc.
-   - Returns probability scores for each category
+**3. CLIP Scene Analysis**
+- Zero-shot classification using natural language crime descriptions:
+  - **Shoplifting**: Behavioral descriptions like "person secretly stealing items"
+  - **Guns**: Multiple variations like "person holding a handgun"
+  - **Urgent Reaction**: Panic behavior like "person rushing suddenly"
+  - **Normal**: Calm, peaceful scene descriptions
+- Returns probability scores for each category
 
-4. **Temporal Consistency Filter**
-   - Requires guns to appear in **multiple frames** (≥2 frames) to avoid false positives
-   - Checks if gun detections are temporally close (within 3-frame window)
-   - Isolated single-frame detections are rejected
+**4. Temporal Consistency Filter**
+- Requires weapons to appear in multiple frames (not just one) to avoid false positives
+- Checks if detections are temporally consistent (within a few frames)
+- Rejects isolated single-frame detections
 
-5. **Crime Decision Logic**
-   - **Priority 1: Shoplifting** (if strong signal)
-     - `avg_shoplifting > 0.50` AND `max_shoplifting > 0.70`
-   - **Priority 2: Gun Detection** (with CLIP validation)
-     - Uses **combined scores** (YOLO + CLIP validation)
-     - **High confidence** (>0.7 combined): Trust validation, confidence = 0.95
-     - **Medium confidence** (0.5-0.7): Reduced filtering, confidence = 0.90
-     - **Low confidence** (<0.5): Need temporal support (≥3 validated guns), confidence = 0.85
-   - **Priority 3: Urgent Reaction** (without YOLO guns)
-     - `avg_urgent_reaction > 0.40` OR `max_urgent_reaction > 0.65`
-     - Combined with shoplifting or weapon scene scores
-   - **Priority 4: CLIP-only Gun** (if very strong CLIP signal)
-     - `avg_weapon > 0.60` OR `max_weapon > 0.80`
+**5. Crime Decision Logic**
+- **Priority-based decision making**:
+  1. **Shoplifting**: If strong shoplifting signal detected
+  2. **Gun Detection**: If validated weapons found, uses combined YOLO + CLIP scores
+     - High confidence: Trust validation
+     - Medium confidence: Reduced filtering
+     - Low confidence: Requires temporal support (multiple detections)
+  3. **Urgent Reaction**: Panic behavior without weapons, combined with other signals
+  4. **CLIP-only Gun**: Very strong CLIP weapon signal without YOLO confirmation
 
 #### **Crime Categories**
 
-1. **SHOPLIFTING**
-   - Behavior-based detection via CLIP
-   - Multiple specific labels for robust detection
-   - Strong signal required (avg > 0.50, max > 0.70)
-
-2. **GUN**
-   - YOLO + CLIP validated detections
-   - Temporal consistency required
-   - Combined confidence scoring
-
-3. **URGENT_REACTION**
-   - Panic/rushing behavior detection
-   - Often combined with other crime signals
-
-4. **NORMAL**
-   - No crime detected
-   - Calm, peaceful scenes
+1. **SHOPLIFTING**: Behavior-based detection via CLIP scene understanding
+2. **GUN**: YOLO + CLIP validated weapon detections with temporal consistency
+3. **URGENT_REACTION**: Panic/rushing behavior detection
+4. **NORMAL**: No crime detected, calm scenes
 
 ---
 
@@ -219,10 +181,6 @@ mp4_id_detector/
 ├── create_2x2_grid_video.py            # 2x2 grid video creator
 ├── outputs_v3/                         # Output directory
 │   ├── annotated_videos_v3/            # Individual annotated videos
-│   │   ├── clip0_annotated.mp4
-│   │   ├── clip1_annotated.mp4
-│   │   ├── clip2_annotated.mp4
-│   │   └── clip3_annotated.mp4
 │   ├── global_identity_catalogue_v3.json  # Global identity data
 │   ├── tracklet_to_global_id.npz      # ID mappings
 │   ├── track_embeddings_v3.npz        # Embedding cache
@@ -234,8 +192,7 @@ mp4_id_detector/
 │   └── 4_upscaled.mp4
 ├── clip{0,1,2,3}_crime_validated.json # Crime detection results per clip
 ├── scene_labels_validated.json        # Dataset-level crime summary
-├── weapon_yolov8_gun.pt              # Gun detection model (optional)
-└── README.md                          # This file
+└── weapon_yolov8_gun.pt              # Gun detection model (optional)
 ```
 
 ---
@@ -263,51 +220,39 @@ DEVICE = "cpu"                         # CPU/GPU device
 #### **Clustering Parameters**
 ```python
 # Within-clip clustering
-WITHIN_CLIP_FACE_WEIGHT = 0.4          # Face weight within same clip (40%)
-WITHIN_CLIP_THRESHOLD = 0.15           # Base similarity threshold
-USE_PER_CLIP_THRESHOLDS = True         # Enable automatic per-clip threshold analysis
+WITHIN_CLIP_FACE_WEIGHT = 0.4          # Face weight (40%)
+WITHIN_CLIP_THRESHOLD = 0.15           # Base threshold
+USE_PER_CLIP_THRESHOLDS = True         # Enable automatic per-clip analysis
 
 # Cross-clip merging
-CROSS_CLIP_FACE_WEIGHT = 0.45          # Face weight across clips (45%)
-CROSS_CLIP_THRESHOLD = 0.46            # Base threshold for cross-clip matching
+CROSS_CLIP_FACE_WEIGHT = 0.45          # Face weight (45%)
+CROSS_CLIP_THRESHOLD = 0.46            # Base threshold
 ```
 
-#### **Feature Extraction & Advanced Options**
+#### **Feature Extraction Options**
 ```python
-USE_TTA = True                         # Test-Time Augmentation (horizontal flip)
-USE_TEMPORAL_SMOOTHING = True          # Smooth embeddings within tracks
-USE_POSE_FEATURES = True               # MediaPipe pose features (66D)
-USE_RERANKING = True                  # k-Reciprocal re-ranking (k=25)
+USE_TTA = True                         # Test-Time Augmentation
+USE_TEMPORAL_SMOOTHING = True          # Smooth embeddings
+USE_POSE_FEATURES = True               # MediaPipe pose features
+USE_RERANKING = True                  # k-Reciprocal re-ranking
 USE_CAMERA_BIAS = True                # Camera bias correction
 USE_ENSEMBLE_REID = True              # Ensemble OSNet + TransReID
-ENSEMBLE_WEIGHTS = [0.7, 0.3]          # [OSNet weight, TransReID weight]
 ```
 
 ### **Crime Detection Configuration**
 
 #### **Model Paths**
 ```python
-# YOLO models
-YOLO_WEIGHTS = "yolov8n.pt"           # Person detection (COCO)
-WEAPON_MODEL = "weapon_yolov8_gun.pt" # Gun detection (optional, custom trained)
-
-# CLIP model
+YOLO_WEIGHTS = "yolov8n.pt"           # Person detection
+WEAPON_MODEL = "weapon_yolov8_gun.pt" # Gun detection (optional)
 CLIP_MODEL = "openai/clip-vit-base-patch32"
 ```
 
 #### **Detection Parameters**
 ```python
-SAMPLE_RATE = 30                      # Analyze every Nth frame (30 = ~1 FPS for 30fps video)
-THRESHOLD = 0.5                       # Crime detection threshold (0.0-1.0)
+SAMPLE_RATE = 30                      # Analyze every Nth frame
+THRESHOLD = 0.5                       # Crime detection threshold
 DEVICE = "cpu"                        # CPU/GPU device
-```
-
-#### **CLIP Validation Thresholds**
-```python
-# Gun validation (strict to filter false positives)
-STRONG_GUN_MARGIN = 0.25              # gun_prob > phone_prob + 0.25 → validation_score = 0.9
-MEDIUM_GUN_MARGIN = 0.15              # gun_prob > phone_prob + 0.15 → validation_score = 0.7
-MARGINAL_GUN_MARGIN = 0.05            # gun_prob > phone_prob + 0.05 → validation_score = 0.6
 ```
 
 ---
@@ -339,7 +284,7 @@ python video_id_detector2_optimized.py
 # Create individual annotated videos for each clip
 python export_annotated_videoes_v3_from_cache.py
 
-# Optional: Create GIF previews for README display
+# Optional: Create GIF previews
 python create_gif_previews.py
 ```
 
@@ -366,7 +311,7 @@ python create_2x2_grid_video.py
 source cvenv/bin/activate
 
 # Analyze a single video
-python crime_no_crime_zero_shot1.py --video ./videos/1_upscaled.mp4 --sample-rate 30 --threshold 0.5
+python crime_no_crime_zero_shot1.py --video ./videos/1_upscaled.mp4 --sample-rate 30
 
 # Save results to JSON
 python crime_no_crime_zero_shot1.py --video ./videos/1_upscaled.mp4 --output clip0_crime.json
@@ -375,7 +320,7 @@ python crime_no_crime_zero_shot1.py --video ./videos/1_upscaled.mp4 --output cli
 #### **Batch Mode** (Process all clips)
 ```bash
 # Process all clips in videos directory
-python crime_no_crime_zero_shot1.py --batch ./videos --sample-rate 30 --threshold 0.5
+python crime_no_crime_zero_shot1.py --batch ./videos --sample-rate 30
 ```
 
 **Output:**
@@ -405,27 +350,7 @@ python crime_no_crime_zero_shot1.py --batch ./videos --sample-rate 30 --threshol
 ### **Person Re-identification Outputs**
 
 #### **1. Global Identity Catalogue (JSON)**
-```json
-{
-  "summary": {
-    "total_clips": 4,
-    "total_tracklets": 17,
-    "total_global_identities": 8
-  },
-  "identities": {
-    "0": {
-      "global_id": 0,
-      "appearances": [
-        {
-          "clip_idx": 0,
-          "frames": [0, 1, 2, ...],
-          "bboxes": [[x1, y1, x2, y2], ...]
-        }
-      ]
-    }
-  }
-}
-```
+Contains summary and detailed appearance information for each global identity across all clips.
 
 #### **2. Tracklet Assignments (NPZ)**
 - `tracklet_to_global_id.npz`: Maps each tracklet to its global ID
@@ -438,154 +363,73 @@ python crime_no_crime_zero_shot1.py --batch ./videos --sample-rate 30 --threshol
 ### **Crime Detection Outputs**
 
 #### **1. Per-Clip Results (JSON)**
-```json
-{
-  "crime_detected": true,
-  "crime_type": "GUN",
-  "confidence": 0.95,
-  "detailed_scores": {...},
-  "detections_per_frame": [...],
-  "validated_weapons": 4
-}
-```
+Contains crime detection results, confidence scores, and detailed frame-by-frame analysis.
 
 #### **2. Dataset Summary (JSON)**
-```json
-{
-  "dataset": "mp4_files_id_detectors_upscaled_validated",
-  "scene_labels": [
-    {"clip_id": 0, "label": "crime", "category": "GUN", "confidence": 0.95},
-    {"clip_id": 1, "label": "normal", "category": "NORMAL", "confidence": 0.85}
-  ]
-}
-```
+Contains dataset-level summary with crime labels for all clips.
 
 ---
 
-## 🔍 Algorithm Details
+## 🔍 How It Works
 
-### **Distance Calculation (Person Re-identification)**
+### **Person Re-identification: Distance Calculation**
 
 #### **Within-Clip Distance**
-- **Distance Calculation**: Uses weighted combination of body and face embeddings
-- When both tracklets have faces:
-  ```
-  distance = 0.60 × body_distance + 0.40 × face_distance
-  ```
-- When one or both lack faces:
-  ```
-  distance = body_distance (face_weight = 0)
-  ```
-- **Cohesion Check**: Tracklet must meet similarity threshold against ALL cluster members (not just average distance)
-- **Adaptive Body Similarity Requirements** (not distance thresholds, but similarity requirements):
-  - Based on temporal overlap ratio (0.80, 0.70, etc.)
-  - Face availability adjustments (0.80-0.87 depending on overlap)
-  - Containment bonus: `+0.05`
-  - Duration ratio ≥ 2.0: `+0.03`
-  - All requirements have minimum floor of `0.65`
-- **Hard Block**: Overlap > 50% (skip cluster, different people)
+- Uses weighted combination of body (60%) and face (40%) embeddings when both available
+- Uses body-only when face information is missing
+- Implements **cohesion check**: tracklet must be similar to ALL cluster members
+- Applies adaptive similarity requirements based on temporal overlap and face availability
+- Hard blocks merging when temporal overlap > 50% (different people)
 
 #### **Cross-Clip Distance**
-- **Best-of-Cluster Matching**: Finds minimum distance among ALL tracklet pairs between clusters
-  - Prevents single bad tracklet from dominating the cluster embedding
-  - When clusters merge (Pass 1), distances are recomputed using all tracklets from merged clusters
-- **Distance Calculation**:
-  - When both clusters have faces:
-    ```
-    distance = min(0.55 × body_distance + 0.45 × face_distance) across all tracklet pairs
-    ```
-  - When one or both lack faces:
-    ```
-    distance = min(body_distance) across all tracklet pairs (face_weight = 0)
-    ```
-- **Cluster Representation**: Uses length-weighted averaging - longer tracklets contribute more to cluster embeddings
-- **Adaptive Threshold**: Based on tracklet length, face availability, and body similarity requirements
+- Uses **best-of-cluster matching**: finds minimum distance among all tracklet pairs
+- Prevents single bad tracklet from dominating cluster comparison
+- Recalculates distances after Pass 1 merges using all tracklets from merged clusters
+- Uses length-weighted averaging: longer tracklets contribute more to cluster embeddings
+- Applies adaptive thresholds based on tracklet length, face availability, and other factors
 
 ### **Clustering Logic Flow**
 
 #### **Stage 1: Within-Clip**
 1. Group tracklets by clip index
 2. For each clip:
-   - Determine threshold (automatic analysis or manual override)
+   - Determine adaptive threshold (automatic or manual override)
    - Calculate pairwise distance matrix (body + face)
-   - Apply temporal overlap analysis
-   - Hard block: Skip if overlap > 50%
-   - Adaptive threshold based on overlap ratio and face presence
-   - Cohesion check: Tracklet must meet threshold against ALL cluster members
+   - Apply temporal overlap analysis with hard blocking
+   - Use adaptive similarity requirements based on overlap and face presence
+   - Require cohesion: tracklet must meet threshold against ALL cluster members
    - Assign to best matching cluster or create new one
 3. Result: Person Clusters (temp_global_id) within each clip
 
 #### **Stage 2: Cross-Clip**
-1. **Cluster Consolidation**: Compute per-cluster representative embeddings using length-weighted averaging
-2. **Distance Computation**: Calculate best-of-cluster distances (minimum among all tracklet pairs)
-3. **Candidate Collection**: Collect all merge candidates with adaptive thresholds
-   - Check same-clip overlap block (hard constraint)
-   - Check transitive blocking (can be overridden by Hausdorff distance <50 pixels)
-   - Calculate adaptive threshold based on tracklet length and face availability
-   - Face-to-no-face pairs get -0.08 threshold adjustment
-4. **Pass 1: Face-to-No-Face Merging**
-   - Sort candidates by body similarity (higher = better, processed first)
-   - Check if clusters are already locked (skip if locked)
-   - Check same-clip overlap block (hard constraint)
-   - Check for confirmed face-to-face matches (prevent conflicts)
-   - Check for multiple same-source-clip merges (prevent conflicts)
-   - Merge if distance < adaptive threshold AND body similarity ≥ 0.65
-   - **Lock all merged clusters** (prevents conflicts in Pass 2)
-5. **Pass 2: Face-to-Face Merging**
-   - **Distance Recalculation**: Recompute distances using ALL tracklets from merged clusters (if Pass 1 merged any)
-   - Prioritize face-to-face pairs when recomputing distances
-   - **Best-Match Logic**: Find best (lowest distance) source candidate for each target cluster
-   - Sort best candidates by distance (lower = better)
-   - Skip if both clusters are locked (prevents re-merging)
-   - Allow locked clusters to merge with NEW unlocked clusters
-   - Check same-clip overlap block (hard constraint)
-   - Check for confirmed face-to-face matches (prevent conflicts)
-   - Merge if distance < adaptive threshold AND body similarity ≥ 0.7
-   - Record confirmed face-to-face matches
-6. **Validation**: Fix same-clip duplicates (prevent multiple tracklets from same clip in same global ID)
-7. **Result**: Global IDs assigned across all clips
+1. Consolidate clusters using length-weighted averaging
+2. Calculate best-of-cluster distances
+3. Collect merge candidates with adaptive thresholds
+4. **Pass 1**: Process face-to-no-face matches (more lenient, locks clusters)
+5. **Pass 2**: Process face-to-face matches (stricter, recalculates distances, best-match logic)
+6. Validate and fix same-clip duplicates
+7. Result: Global IDs assigned across all clips
 
-### **Adaptive Thresholds**
+### **Crime Detection: Decision Making**
 
-#### **Within-Clip Adaptive Thresholds**
-- **Base threshold**: 0.15 (when auto-analysis disabled via `USE_PER_CLIP_THRESHOLDS = False`)
-- **Automatic per-clip threshold**: Calculated based on clip characteristics when `USE_PER_CLIP_THRESHOLDS = True`
-- **Overlap-based body similarity requirements**:
-  - **Overlap > 40%**: Required body similarity = `0.80`
-  - **Overlap > 10%**: Required body similarity = `0.70`
-  - **Overlap ≤ 10%**: Required body similarity = `0.70`
-- **All thresholds have minimum floor**: `0.65`
-- **Hard block**: Overlap > 50% (different people, skip cluster)
+The system uses a priority-based decision tree:
+1. **Shoplifting**: Strong behavioral signal from CLIP
+2. **Gun Detection**: Validated YOLO + CLIP detections with temporal consistency
+3. **Urgent Reaction**: Panic behavior combined with other signals
+4. **CLIP-only Gun**: Very strong scene-level weapon signal
+5. **Normal**: No crime detected
 
-#### **Cross-Clip Adaptive Thresholds**
-- **Base threshold**: 0.46 (used as baseline for distance threshold)
-- **Body similarity requirements**:
-  - Face-to-face: `0.7` (stricter)
-  - Face-to-no-face: `0.65` (more lenient)
-- **Length-based distance threshold adjustments**:
-  - **High confidence** (long tracklets >500 frames): `base - 0.02 = 0.44` (more lenient)
-  - **Medium confidence** (300-500 frames): `base = 0.46`
-  - **Medium+ confidence** (250-300 frames): `base + 0.03 = 0.49`
-  - **Low confidence** (short tracklets <250 frames): `base + 0.05 = 0.51` (very lenient)
-- **Face availability adjustments**:
-  - **Face-to-no-face pairs**: Distance threshold reduced by `0.08` (easier to merge)
-  - **Face-to-face pairs**: Uses stricter thresholds (no adjustment)
-- **Same-clip blocking**: Hard constraint (never merge clusters from same clip)
-- **Transitive blocking**: Prevents indirect merging (can be overridden by Hausdorff distance <50 pixels)
+Confidence scores are calculated based on:
+- Combined YOLO + CLIP validation scores (for guns)
+- Temporal consistency (multiple detections)
+- Scene-level CLIP scores (for behavior-based crimes)
 
 ---
 
 ## 🎨 Annotated Videos
 
 ### **Color Coding**
-Each global ID is assigned a unique color from a predefined palette:
-- Global ID 0: Green
-- Global ID 1: Red
-- Global ID 2: Blue
-- Global ID 3: Yellow
-- Global ID 4: Magenta
-- Global ID 5: Cyan
-- ... (cycles through palette)
+Each global ID is assigned a unique color from a predefined palette (Green, Red, Blue, Yellow, Magenta, Cyan, etc.)
 
 ### **Visualization Elements**
 - **Bounding Boxes**: Thick colored rectangles around detected persons
@@ -593,38 +437,28 @@ Each global ID is assigned a unique color from a predefined palette:
 - **Legend**: List of all global IDs present in the clip (top-left corner)
 
 ### **2x2 Grid Video** 🎬
-The grid video combines all 4 annotated clips into a single synchronized view for easy comparison.
-
-**Output file**: `outputs_v3/grid_2x2_annotated.mp4` (created by `create_2x2_grid_video.py`)
-
-**Key Features:**
-- **Perfect Synchronization**: All clips play frame-by-frame in perfect sync
-- **Aspect Ratio Preservation**: Each clip maintains its original aspect ratio
-- **Visual Consistency**: Same color coding and labels as individual annotated videos
-- **Clear Separation**: White borders and spacing between clips
-- **Clip Identification**: Labels (Clip 0-3) clearly marked on each cell
-
-**Perfect For:**
-- ✅ **Cross-clip validation**: See the same person (same global ID) across different clips simultaneously
-- ✅ **View comparison**: Compare front view, back view, side view of the same person
-- ✅ **Quality assurance**: Quickly verify clustering accuracy
-- ✅ **Presentations**: Professional visualization for demonstrations and reports
+Combines all 4 annotated clips into a single synchronized view:
+- Perfect synchronization: frame-by-frame aligned playback
+- Preserves aspect ratios
+- Same color coding and labels as individual videos
+- Clear separation with borders and spacing
+- Perfect for cross-clip validation and presentations
 
 ---
 
 ## ⚡ Performance
 
 ### **Caching System**
-- **NPZ Cache Files**: Pre-computed embeddings and mappings
-- **Fast Reprocessing**: Load from cache when available
-- **Parameter Tuning**: Iterate quickly without reprocessing videos
+- NPZ cache files store pre-computed embeddings and mappings
+- Fast reprocessing when cache is available
+- Enables quick parameter tuning without reprocessing videos
 
 ### **Optimization Features**
-- **Frame Sampling**: Processes every 10th frame for feature extraction (person re-id)
-- **Temporal Sampling**: Processes every 30th frame for crime detection (~1 FPS)
-- **Length-Weighted Averaging**: Longer tracklets contribute more to embeddings
-- **Best-of-Cluster Matching**: Efficient comparison of merged clusters
-- **Vectorized Operations**: NumPy operations for speed
+- Frame sampling: Processes every 10th frame for feature extraction (person re-id)
+- Temporal sampling: Processes every 30th frame for crime detection (~1 FPS)
+- Length-weighted averaging: Longer tracklets contribute more
+- Best-of-cluster matching: Efficient comparison of merged clusters
+- Vectorized operations: NumPy operations for speed
 
 ---
 
@@ -658,21 +492,13 @@ CROSS_CLIP_FACE_WEIGHT = 0.45          # Face weight across clips
 ### **Crime Detection**
 
 #### **Adjusting Detection Sensitivity**
-```python
-# In crime_no_crime_zero_shot1.py or via command line
+```bash
 --threshold 0.5  # Crime detection threshold (0.0-1.0)
 --sample-rate 30  # Analyze every Nth frame (lower = more thorough but slower)
 ```
 
 #### **CLIP Validation Strictness**
-Modify `validate_gun_with_clip()` function thresholds:
-```python
-# More strict (fewer false positives, more false negatives)
-if gun_prob > phone_prob + 0.30:  # Increased from 0.25
-
-# More lenient (more detections, more false positives)
-if gun_prob > phone_prob + 0.20:  # Decreased from 0.25
-```
+Modify `validate_gun_with_clip()` function thresholds in the code for more/less strict validation.
 
 ---
 
@@ -680,26 +506,19 @@ if gun_prob > phone_prob + 0.20:  # Decreased from 0.25
 
 ### **Person Re-identification**
 
-The system produces **8 global identities** from **17 tracklets** across **4 video clips**:
-
-- **Clip 0**: Tracklets → Global IDs
-- **Clip 1**: Tracklets → Global IDs  
-- **Clip 2**: Tracklets → Global IDs
-- **Clip 3**: Tracklets → Global IDs
-
-**Cross-Clip Matching:**
-- Global ID 0: Appears in Clip 0 and Clip 2
-- Global ID 1: Appears in Clip 0 and Clip 1
-- Global ID 2: Appears in Clip 1 and Clip 2
-- ... (see JSON output for complete mapping)
+The system produces global identities from tracklets across multiple video clips, showing:
+- Which people appear in which clips
+- Cross-clip matching results
+- Detailed appearance information
 
 ### **Crime Detection**
 
-**Example Results:**
-- Clip 0: GUN detected (confidence: 0.95, 4 validated weapons)
-- Clip 1: NORMAL (confidence: 0.85)
-- Clip 2: SHOPLIFTING detected (confidence: 0.78)
-- Clip 3: GUN detected (confidence: 0.90, 2 validated weapons)
+Results show:
+- Crime type detected (GUN, SHOPLIFTING, etc.)
+- Confidence scores
+- Number of validated weapons (for gun detection)
+- Frame-by-frame analysis
+- Dataset-level summary
 
 ---
 
@@ -753,11 +572,10 @@ The system produces **8 global identities** from **17 tracklets** across **4 vid
    - Adjust temporal consistency requirements
 
 ### **Performance Tips**
-- Use existing cache: Set `USE_EXISTING_CACHE = True` (person re-id)
+- Use existing cache for person re-id
 - CPU processing: Set `DEVICE = "cpu"` for compatibility
-- Reduce video resolution: For faster processing
-- Adjust sampling rate: Increase `SAMPLING_RATE` for speed (person re-id)
-- Increase sample rate: Use `--sample-rate 60` for crime detection (faster but less thorough)
+- Reduce video resolution for faster processing
+- Adjust sampling rates for speed vs. accuracy tradeoff
 
 ---
 
@@ -795,4 +613,3 @@ Contributions are welcome! Areas for improvement:
 ---
 
 **Note**: This system uses sophisticated two-stage adaptive clustering and hybrid YOLO + CLIP detection approaches that have been carefully tuned for accuracy across different video conditions, person appearances, and crime scenarios.
-
